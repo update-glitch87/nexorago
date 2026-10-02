@@ -77,6 +77,30 @@ function resolveWasm() {
   throw new Error('sql.js wasm not found — run npm install');
 }
 
+function loadSeedBaseBytes() {
+  const candidates = [
+    path.join(__dirname, 'seed-base.db'),
+    path.join(process.cwd(), 'server', 'seed-base.db'),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      console.log(`[DB] Using preseed ${p}`);
+      return new Uint8Array(fs.readFileSync(p));
+    }
+  }
+  return null;
+}
+
+function withTimeout(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise.finally(() => clearTimeout(timer)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 function getBlobStore() {
   if (!IS_NETLIFY_BLOBS()) return null;
   try {
@@ -600,29 +624,49 @@ async function initDb() {
     const wasmBinary = resolveWasm();
     const SQL = await initSqlJs({ wasmBinary });
 
-    // On Vercel/Turso: start empty in-memory — do not load large disk/blob snapshots on cold start
-    const fileBytes = (IS_SERVERLESS && turso.hasTursoConfig())
-      ? null
-      : await loadPersistentBytes();
+    // Prefer tiny pre-seeded DB on serverless (avoids 100+ inserts on every cold start)
+    let fileBytes = null;
+    if (IS_SERVERLESS) {
+      fileBytes = loadSeedBaseBytes();
+    }
+    if (!fileBytes && !(IS_SERVERLESS && turso.hasTursoConfig())) {
+      fileBytes = await loadPersistentBytes();
+    }
+
     const db = wrapSqlJs(SQL, fileBytes);
     _db = db;
 
-    // Schema + seed without per-row DB export (was causing Vercel FUNCTION_INVOCATION_TIMEOUT)
     db.withBulk(() => {
       migrateIfNeeded(db);
       createSchema(db);
-      seed(db);
+      // Only seed when preseed missing / incomplete
+      const visas = db.prepare('SELECT COUNT(*) as c FROM visas').get()?.c || 0;
+      if (visas < 10) seed(db);
+      else {
+        // Ensure admin user exists
+        const adminUser = process.env.ADMIN_USER || 'admin';
+        const adminPass = process.env.ADMIN_PASS || 'NexoraGo2026!';
+        db.prepare('INSERT OR IGNORE INTO admin_users (username, password_hash) VALUES (?, ?)')
+          .run(adminUser, hashPassword(adminPass));
+        console.log(`[DB] Preseed ready — visas:${visas} jobs:${db.prepare('SELECT COUNT(*) as c FROM jobs').get().c}`);
+      }
     });
 
-    // Pull applications from Turso (source of truth). Do NOT push back on cold start.
+    // Turso pull with hard timeout so Vercel never hits FUNCTION_INVOCATION_TIMEOUT
     if (turso.hasTursoConfig()) {
       try {
-        await turso.ensureSchema();
-        await turso.pullAppsIntoDb(db);
+        await withTimeout(
+          (async () => {
+            await turso.ensureSchema();
+            await turso.pullAppsIntoDb(db);
+          })(),
+          4500,
+          'Turso sync'
+        );
       } catch (err) {
-        console.error('[DB] Turso pull failed:', err.message);
+        console.error('[DB] Turso sync skipped:', err.message);
       }
-    } else {
+    } else if (!IS_SERVERLESS) {
       console.warn('[DB] TURSO_DATABASE_URL / TURSO_AUTH_TOKEN not set — apps may not survive redeploy');
       try {
         const backup = await appsStore.loadAppsBackup();
@@ -630,9 +674,11 @@ async function initDb() {
       } catch (err) {
         console.error('[DB] apps restore failed:', err.message);
       }
+    } else {
+      console.warn('[DB] Turso not configured on serverless — set TURSO_DATABASE_URL + TURSO_AUTH_TOKEN');
     }
 
-    // Local snapshot only — skip Turso push on init (already in sync after pull)
+    // Never block cold start on Turso push
     await db.flushPersist({ pushTurso: false });
     const orders = db.prepare('SELECT COUNT(*) as c FROM orders').get().c;
     console.log(`[DB] Ready — applications: ${orders} (backend: ${turso.hasTursoConfig() ? 'turso' : 'local/blobs'}) in ${Date.now() - t0}ms`);

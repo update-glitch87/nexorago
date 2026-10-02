@@ -119,10 +119,17 @@ async function loadPersistentBytes() {
 let _persistChain = Promise.resolve();
 
 async function savePersistentBytes(bytes) {
-  try {
-    fs.writeFileSync(DB_PATH, Buffer.from(bytes));
-  } catch (err) {
-    console.error('[DB] local persist failed:', err.message);
+  // Local /tmp or disk snapshot (best-effort; Turso is source of truth for apps)
+  if (!IS_SERVERLESS || !turso.hasTursoConfig()) {
+    try {
+      fs.writeFileSync(DB_PATH, Buffer.from(bytes));
+    } catch (err) {
+      console.error('[DB] local persist failed:', err.message);
+    }
+  } else {
+    try {
+      fs.writeFileSync(DB_PATH, Buffer.from(bytes));
+    } catch { /* /tmp may be full — ignore */ }
   }
 
   const store = getBlobStore();
@@ -137,13 +144,15 @@ async function savePersistentBytes(bytes) {
     console.error('[DB] WARNING: sqlite Blobs store null');
   }
 
-  // JSON backup of applications (Blobs / disk)
-  const live = _db;
-  if (live) {
-    try {
-      await appsStore.saveAppsBackup(live);
-    } catch (err) {
-      console.error('[DB] apps backup failed:', err.message);
+  // JSON backup only when Turso is unavailable (slow on cold start)
+  if (!turso.hasTursoConfig()) {
+    const live = _db;
+    if (live) {
+      try {
+        await appsStore.saveAppsBackup(live);
+      } catch (err) {
+        console.error('[DB] apps backup failed:', err.message);
+      }
     }
   }
 }
@@ -155,10 +164,10 @@ function queuePersist(bytes) {
   return _persistChain;
 }
 
-async function flushPersist() {
+async function flushPersist(opts = {}) {
   await _persistChain;
-  // Turso push once at flush (not on every seed INSERT)
-  if (_db && turso.hasTursoConfig()) {
+  const shouldPush = opts.pushTurso !== false;
+  if (shouldPush && _db && turso.hasTursoConfig()) {
     try {
       await turso.pushAppsFromDb(_db);
     } catch (err) {
@@ -170,13 +179,26 @@ async function flushPersist() {
 /** Wrap sql.js so call sites can keep using DatabaseSync-style prepare().get/all/run */
 function wrapSqlJs(SQL, fileBytes) {
   const raw = fileBytes ? new SQL.Database(fileBytes) : new SQL.Database();
+  let persistEnabled = true;
 
   function persist() {
+    if (!persistEnabled) return;
     try {
       const data = raw.export();
       queuePersist(data);
     } catch (err) {
       console.error('[DB] persist failed:', err.message);
+    }
+  }
+
+  /** Run many writes without exporting/saving the DB on every INSERT (critical for Vercel cold start). */
+  function withBulk(fn) {
+    const prev = persistEnabled;
+    persistEnabled = false;
+    try {
+      return fn();
+    } finally {
+      persistEnabled = prev;
     }
   }
 
@@ -216,7 +238,7 @@ function wrapSqlJs(SQL, fileBytes) {
     persist();
   }
 
-  return { prepare, exec, _raw: raw, _persist: persist, flushPersist };
+  return { prepare, exec, withBulk, _raw: raw, _persist: persist, flushPersist };
 }
 
 function tableExists(db, name) {
@@ -523,25 +545,28 @@ const JOB_DATA = [
 ];
 
 function seed(db) {
-  const insertVisa = db.prepare(`
-    INSERT OR IGNORE INTO visas (country_code, country_name, flag_emoji, visa_type, category, price, processing_days, validity_days, entries, requirements, description, popular)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  for (const v of VISA_DATA) {
-    insertVisa.run(v.code, v.name, v.flag, v.type, v.category, v.price, v.processing, v.validity, v.entries, JSON.stringify(v.reqs), v.desc, v.popular);
+  const existingVisas = db.prepare('SELECT COUNT(*) as c FROM visas').get().c;
+  if (existingVisas < VISA_DATA.length) {
+    const insertVisa = db.prepare(`
+      INSERT OR IGNORE INTO visas (country_code, country_name, flag_emoji, visa_type, category, price, processing_days, validity_days, entries, requirements, description, popular)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const v of VISA_DATA) {
+      insertVisa.run(v.code, v.name, v.flag, v.type, v.category, v.price, v.processing, v.validity, v.entries, JSON.stringify(v.reqs), v.desc, v.popular);
+    }
   }
 
-  // Add any missing seeded jobs without wiping admin-created ones
-  const insertJob = db.prepare(`
-    INSERT INTO jobs (title, company, country_code, country_name, city, category, salary_range, visa_support, description, active)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 1)
-  `);
-  const findJob = db.prepare('SELECT id FROM jobs WHERE title = ? AND company = ? AND city = ?');
-  for (const j of JOB_DATA) {
-    const exists = findJob.get(j.title, j.company, j.city);
-    if (!exists) {
-      insertJob.run(j.title, j.company, j.code, j.name, j.city, j.category, j.salary, j.desc);
+  const existingJobs = db.prepare('SELECT COUNT(*) as c FROM jobs').get().c;
+  if (existingJobs < JOB_DATA.length) {
+    const insertJob = db.prepare(`
+      INSERT INTO jobs (title, company, country_code, country_name, city, category, salary_range, visa_support, description, active)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 1)
+    `);
+    const findJob = db.prepare('SELECT id FROM jobs WHERE title = ? AND company = ? AND city = ?');
+    for (const j of JOB_DATA) {
+      if (!findJob.get(j.title, j.company, j.city)) {
+        insertJob.run(j.title, j.company, j.code, j.name, j.city, j.category, j.salary, j.desc);
+      }
     }
   }
 
@@ -571,18 +596,25 @@ async function initDb() {
   if (_initPromise) return _initPromise;
 
   _initPromise = (async () => {
+    const t0 = Date.now();
     const wasmBinary = resolveWasm();
     const SQL = await initSqlJs({ wasmBinary });
 
-    const fileBytes = await loadPersistentBytes();
+    // On Vercel/Turso: start empty in-memory — do not load large disk/blob snapshots on cold start
+    const fileBytes = (IS_SERVERLESS && turso.hasTursoConfig())
+      ? null
+      : await loadPersistentBytes();
     const db = wrapSqlJs(SQL, fileBytes);
-    // Assign early so persist() can backup applications during seed/writes
     _db = db;
-    migrateIfNeeded(db);
-    createSchema(db);
-    seed(db);
 
-    // 1) Turso first (durable source of truth)
+    // Schema + seed without per-row DB export (was causing Vercel FUNCTION_INVOCATION_TIMEOUT)
+    db.withBulk(() => {
+      migrateIfNeeded(db);
+      createSchema(db);
+      seed(db);
+    });
+
+    // Pull applications from Turso (source of truth). Do NOT push back on cold start.
     if (turso.hasTursoConfig()) {
       try {
         await turso.ensureSchema();
@@ -592,22 +624,18 @@ async function initDb() {
       }
     } else {
       console.warn('[DB] TURSO_DATABASE_URL / TURSO_AUTH_TOKEN not set — apps may not survive redeploy');
-    }
-
-    // 2) JSON blob backup fallback
-    try {
-      const backup = await appsStore.loadAppsBackup();
-      if (backup) {
-        const n = appsStore.restoreAppsIntoDb(db, backup);
-        if (n > 0) await appsStore.saveAppsBackup(db);
+      try {
+        const backup = await appsStore.loadAppsBackup();
+        if (backup) appsStore.restoreAppsIntoDb(db, backup);
+      } catch (err) {
+        console.error('[DB] apps restore failed:', err.message);
       }
-    } catch (err) {
-      console.error('[DB] apps restore failed:', err.message);
     }
 
-    await db.flushPersist();
+    // Local snapshot only — skip Turso push on init (already in sync after pull)
+    await db.flushPersist({ pushTurso: false });
     const orders = db.prepare('SELECT COUNT(*) as c FROM orders').get().c;
-    console.log(`[DB] Ready — applications: ${orders} (backend: ${turso.hasTursoConfig() ? 'turso' : 'local/blobs'})`);
+    console.log(`[DB] Ready — applications: ${orders} (backend: ${turso.hasTursoConfig() ? 'turso' : 'local/blobs'}) in ${Date.now() - t0}ms`);
     return _db;
   })();
 
@@ -628,12 +656,13 @@ const dbProxy = new Proxy({}, {
   get(_t, prop) {
     if (prop === 'initDb') return initDb;
     if (prop === 'getDb') return getDb;
-    if (prop === 'flushPersist') return () => (_db ? _db.flushPersist() : Promise.resolve());
-    return getDb()[prop];
+    if (prop === 'flushPersist') {
+      return (opts) => (_db ? _db.flushPersist(opts) : Promise.resolve());
+    }    return getDb()[prop];
   },
 });
 
 module.exports = dbProxy;
 module.exports.initDb = initDb;
 module.exports.getDb = getDb;
-module.exports.flushPersist = () => (_db ? _db.flushPersist() : Promise.resolve());
+module.exports.flushPersist = (opts) => (_db ? _db.flushPersist(opts) : Promise.resolve());

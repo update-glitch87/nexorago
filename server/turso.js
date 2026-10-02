@@ -149,13 +149,13 @@ async function pushAppsFromDb(db) {
 
   const orders = db.prepare('SELECT * FROM orders').all();
   const kyc = db.prepare('SELECT * FROM kyc_verifications').all();
+  const batch = [];
 
-  // Upsert each order (durable — never wipe remote first)
   for (const o of orders) {
     const keys = Object.keys(o);
     const placeholders = keys.map(() => '?').join(',');
     const updates = keys.filter((k) => k !== 'id').map((k) => `${k}=excluded.${k}`).join(',');
-    await client.execute({
+    batch.push({
       sql: `INSERT INTO orders (${keys.join(',')}) VALUES (${placeholders})
             ON CONFLICT(id) DO UPDATE SET ${updates}`,
       args: keys.map((k) => o[k]),
@@ -166,32 +166,36 @@ async function pushAppsFromDb(db) {
     const keys = Object.keys(k);
     if (k.id != null) {
       const updates = keys.filter((x) => x !== 'id').map((x) => `${x}=excluded.${x}`).join(',');
-      await client.execute({
+      batch.push({
         sql: `INSERT INTO kyc_verifications (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})
               ON CONFLICT(id) DO UPDATE SET ${updates}`,
         args: keys.map((x) => k[x]),
       });
     } else {
-      await client.execute({
+      batch.push({
         sql: `INSERT INTO kyc_verifications (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`,
         args: keys.map((x) => k[x]),
       });
     }
   }
 
-  // Remove remote orders deleted in admin (keep Turso in sync)
-  if (orders.length === 0) {
-    // Do not wipe Turso if local is empty — cold start race
-  } else {
-    const ids = orders.map((o) => o.id);
+  if (batch.length) {
+    await client.batch(batch, 'write');
+  }
+
+  // Sync deletes only when local has data (never wipe Turso on empty cold start)
+  if (orders.length > 0) {
+    const idSet = new Set(orders.map((o) => o.id));
     const remote = await client.execute('SELECT id FROM orders');
+    const deletes = [];
     for (const r of remote.rows || []) {
       const id = r.id ?? r[0];
-      if (id && !ids.includes(id)) {
-        await client.execute({ sql: 'DELETE FROM kyc_verifications WHERE order_id = ?', args: [id] });
-        await client.execute({ sql: 'DELETE FROM orders WHERE id = ?', args: [id] });
+      if (id && !idSet.has(id)) {
+        deletes.push({ sql: 'DELETE FROM kyc_verifications WHERE order_id = ?', args: [id] });
+        deletes.push({ sql: 'DELETE FROM orders WHERE id = ?', args: [id] });
       }
     }
+    if (deletes.length) await client.batch(deletes, 'write');
   }
 
   console.log(`[TURSO] Pushed ${orders.length} applications`);

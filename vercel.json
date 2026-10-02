@@ -2,15 +2,20 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "npm install",
   "rewrites": [
+    { "source": "/api/health", "destination": "/api/health" },
     { "source": "/api/(.*)", "destination": "/api" },
     { "source": "/track", "destination": "/" },
     { "source": "/admin82832783", "destination": "/" }
   ],
   "functions": {
     "api/index.js": {
-      "includeFiles": "{node_modules/sql.js/dist/sql-wasm.wasm,server/seed-base.db,server/**}",
+      "includeFiles": "{node_modules/sql.js/dist/sql-wasm.wasm,server/seed-base.db}",
       "memory": 1024,
       "maxDuration": 10
+    },
+    "api/health.js": {
+      "memory": 128,
+      "maxDuration": 5
     }
   }
 }

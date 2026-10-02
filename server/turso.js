@@ -2,7 +2,7 @@
  * Durable applications store on Turso (libSQL).
  * sql.js stays as the in-process API; Turso is the source of truth for orders/KYC.
  */
-const { createClient } = require('@libsql/client');
+const { createClient } = require('@libsql/client/http');
 
 let _client = null;
 

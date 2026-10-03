@@ -9,8 +9,8 @@
   ],
   "functions": {
     "api/index.js": {
-      "includeFiles": "{node_modules/sql.js/dist/sql-wasm.wasm,server/seed-base.db}",
-      "memory": 1024,
+      "includeFiles": "server/seed-data.json",
+      "memory": 512,
       "maxDuration": 10
     },
     "api/health.js": {

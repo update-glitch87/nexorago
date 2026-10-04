@@ -599,8 +599,10 @@ async function handle(req, res) {
       if (status) { sets.push('order_status=?'); args.push(status); }
       if (kycStatus) { sets.push('kyc_status=?'); args.push(kycStatus); }
       if (notes != null) { sets.push('kyc_notes=?'); args.push(notes); }
-      if (status === 'approved' || status === 'completed') {
-        if (!kycStatus) { sets.push("kyc_status=CASE WHEN kyc_status='n/a' THEN 'required' ELSE kyc_status END"); }
+      if ((status === 'approved' || status === 'completed') && !kycStatus
+          && (order.kyc_status === 'n/a' || !order.kyc_status)) {
+        sets.push('kyc_status=?');
+        args.push('required');
       }
       args.push(orderId);
       await client.execute({ sql: `UPDATE orders SET ${sets.join(', ')} WHERE id=?`, args });

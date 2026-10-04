@@ -632,7 +632,12 @@ app.patch('/api/admin/orders/:id', requireAdmin, async (req, res) => {
   if (kyc_notes !== undefined) { updates.push('kyc_notes = ?'); params.push(kyc_notes); }
   if (payment_status) { updates.push('payment_status = ?'); params.push(payment_status); }
   if (notes !== undefined) { updates.push('notes = ?'); params.push(notes); }
-  if (kyc_status && kyc_status !== 'pending' && kyc_status !== 'n/a' && kyc_status !== 'submitted') {
+  // Approve for payment unlocks KYC
+  if (order_status === 'completed' && !kyc_status && (order.kyc_status === 'n/a' || !order.kyc_status)) {
+    updates.push('kyc_status = ?');
+    params.push('required');
+  }
+  if (kyc_status && kyc_status !== 'pending' && kyc_status !== 'n/a' && kyc_status !== 'submitted' && kyc_status !== 'required') {
     updates.push("kyc_reviewed_at = datetime('now')");
   }
   if (!updates.length) return res.status(400).json({ error: 'No fields to update' });

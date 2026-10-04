@@ -344,7 +344,18 @@ async function handle(req, res) {
     return json(res, 503, { error: 'Database not configured. Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN on Vercel.' });
   }
 
-  if (client && needsDb) await ensureOrdersSchema(client);
+  if (client && needsDb) {
+    try {
+      await ensureOrdersSchema(client);
+    } catch (err) {
+      console.error('[schema]', err);
+      return json(res, 503, {
+        error: 'Database connection failed',
+        detail: String(err.message || err),
+        tip: 'Vercel TURSO_* must match your current Turso DB. Open /api/health and check turso_host, then update env + Redeploy.',
+      });
+    }
+  }
 
   // Track
   const trackMatch = p.match(/^\/api\/orders\/track\/(.+)$/);

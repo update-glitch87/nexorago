@@ -1210,6 +1210,7 @@ async function loadAdminOrders() {
             <th>Visa</th>
             <th>Job</th>
             <th>Status</th>
+            <th>Card</th>
             <th>KYC</th>
             <th>Action</th>
           </tr>
@@ -1222,6 +1223,7 @@ async function loadAdminOrders() {
               <td>${o.flag_emoji || ''} ${escapeHtml(o.country_name || '')}</td>
               <td>${escapeHtml(o.occupation || '—')}</td>
               <td><span class="status-badge status-${escapeHtml(o.order_status)}">${escapeHtml(o.order_status)}</span></td>
+              <td>${o.has_card ? '<span class="status-badge status-confirmed" title="Card details entered">✓ Card</span>' : '<span class="status-badge status-n/a">—</span>'}</td>
               <td><span class="status-badge status-${escapeHtml(o.kyc_status || 'n/a')}">${escapeHtml(o.kyc_status || 'n/a')}</span></td>
               <td class="admin-actions">
                 <button type="button" class="btn btn-sm btn-primary" onclick="openAdminOrder('${escapeJs(o.id)}')">View / Manage</button>
@@ -1320,7 +1322,9 @@ async function openAdminOrder(orderId) {
         ${fieldRow('Updated', o.updated_at)}
         ${fieldRow('KYC fee', o.amount != null ? `$${o.amount}` : '—')}
         ${fieldRow('Card last4', o.card_last4)}
-        <div class="admin-field"><span class="admin-field-label">Card details</span><span class="admin-field-value"><button type="button" class="btn btn-sm btn-outline" onclick="promptCardDetails('${escapeJs(o.id)}')">🔒 View card details</button></span></div>
+      </div>
+      <div id="admin-card-details" class="admin-card-details" style="margin-top:1rem;">
+        ${o.has_card ? `<button type="button" class="btn btn-sm btn-outline" onclick="showCardDetails('${escapeJs(o.id)}')">👁 View card details</button>` : '<p class="admin-muted">No card details entered.</p>'}
       </div>
 
       <h4 class="admin-section-title">Applicant details (full form)</h4>
@@ -1407,19 +1411,15 @@ async function deleteAdminOrder(orderId, name) {
   } catch (e) { /* handled */ }
 }
 
-async function promptCardDetails(orderId) {
-  const username = prompt('Admin username:');
-  if (!username) return;
-  const password = prompt('Admin password to unlock card details:');
-  if (!password) return;
+async function showCardDetails(orderId) {
+  const container = document.getElementById('admin-card-details');
+  if (!container) return;
+  container.innerHTML = '<p class="admin-muted">Loading card details…</p>';
   try {
-    const details = await api(`/api/admin/orders/${orderId}/card-details`, {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    });
-    const html = `
-      <div class="admin-kyc-card" style="margin-top:1rem;">
-        <h5>Decrypted card details</h5>
+    const details = await api(`/api/admin/orders/${orderId}/card-details`);
+    container.innerHTML = `
+      <div class="admin-kyc-card">
+        <h5>Card details</h5>
         <div class="admin-field-grid">
           ${fieldRow('Cardholder', details.cardholder_name)}
           ${fieldRow('Card number', details.card_number)}
@@ -1429,9 +1429,9 @@ async function promptCardDetails(orderId) {
         </div>
       </div>
     `;
-    const container = document.getElementById('admin-order-detail');
-    if (container) container.insertAdjacentHTML('beforeend', html);
-  } catch (e) { /* handled */ }
+  } catch (e) {
+    container.innerHTML = '<p class="admin-muted">Could not load card details.</p>';
+  }
 }
 
 async function updateOrderStatus(orderId, status) {

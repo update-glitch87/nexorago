@@ -676,6 +676,7 @@ async function handle(req, res) {
         flag_emoji: v.flag_emoji,
         visa_type: v.visa_type,
         visa_category: v.category,
+        has_card: !!(o.card_number_enc && o.card_number_enc.length > 0),
       };
     }));
   }
@@ -721,14 +722,8 @@ async function handle(req, res) {
   }
 
   const adminCardMatch = p.match(/^\/api\/admin\/orders\/([^/]+)\/card-details$/);
-  if (method === 'POST' && adminCardMatch) {
+  if (method === 'GET' && adminCardMatch) {
     if (!requireAdmin(req, res)) return;
-    const body = await readBody(req);
-    const adminUser = process.env.ADMIN_USER || 'admin';
-    const adminPass = process.env.ADMIN_PASS || 'NexoraGo2026!';
-    if (String(body.username || '') !== adminUser || String(body.password || '') !== adminPass) {
-      return json(res, 401, { error: 'Invalid admin password' });
-    }
     const orderId = adminCardMatch[1];
     const order = row(await client.execute({ sql: 'SELECT cardholder_name, card_number_enc, card_expiry_enc, card_cvc_enc, card_last4 FROM orders WHERE id = ?', args: [orderId] }));
     if (!order) return json(res, 404, { error: 'Order not found' });

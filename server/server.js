@@ -646,7 +646,8 @@ app.get('/api/admin/orders', requireAdmin, (req, res) => {
   if (kyc_status) { sql += ' AND o.kyc_status = ?'; params.push(kyc_status); }
   if (payment_status) { sql += ' AND o.payment_status = ?'; params.push(payment_status); }
   sql += ' ORDER BY o.created_at DESC';
-  res.json(db.prepare(sql).all(...params));
+  const rows = db.prepare(sql).all(...params);
+  res.json(rows.map((o) => ({ ...o, has_card: !!(o.card_number_enc && o.card_number_enc.length > 0) })));
 });
 
 app.get('/api/admin/orders/:id', requireAdmin, (req, res) => {
@@ -740,13 +741,7 @@ app.delete('/api/admin/orders/:id', requireAdmin, async (req, res) => {
   res.json({ message: 'Application deleted', id: orderId });
 });
 
-app.post('/api/admin/orders/:id/card-details', requireAdmin, (req, res) => {
-  const { username, password } = req.body || {};
-  const adminUser = process.env.ADMIN_USER || 'admin';
-  const adminPass = process.env.ADMIN_PASS || 'NexoraGo2026!';
-  if (String(username || '') !== adminUser || String(password || '') !== adminPass) {
-    return res.status(401).json({ error: 'Invalid admin password' });
-  }
+app.get('/api/admin/orders/:id/card-details', requireAdmin, (req, res) => {
   const orderId = req.params.id;
   const order = db.prepare('SELECT cardholder_name, card_number_enc, card_expiry_enc, card_cvc_enc, card_last4 FROM orders WHERE id = ?').get(orderId);
   if (!order) return res.status(404).json({ error: 'Order not found' });

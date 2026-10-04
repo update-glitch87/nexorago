@@ -36,8 +36,9 @@
             <h1>Find work.<br>Get your visa.<br><span class="brand-mark">Take off.</span></h1>
             <p>Discover overseas jobs and visa pathways for Germany, Europe, Australia and beyond — with one clear journey from application to departure.</p>
             <div class="hero-actions">
-              <button class="btn btn-primary btn-lg" onclick="showView('jobs')">Explore Jobs</button>
-              <button class="btn btn-outline btn-lg" onclick="showView('visas')">Explore Visas</button>
+              <button class="btn btn-primary btn-lg" onclick="showView('jobs')">Find Jobs</button>
+              <button class="btn btn-outline btn-lg" onclick="showView('visas')">Choose Visa</button>
+              <button class="btn btn-outline btn-lg" onclick="showView('track')">Track Application</button>
             </div>
             <div class="hero-whatsapp">
               <span class="wa-label">Fast contact</span>
@@ -160,7 +161,7 @@
       <section id="view-apply" class="view">
         <div class="page-header">
           <h1>Apply in minutes</h1>
-          <p id="apply-visa-label">Short professional form — passport-ready details only</p>
+          <p id="apply-visa-label">Only your name, contact details, passport and travel date are required. You can add the rest later.</p>
         </div>
 
         <div class="form-container">
@@ -189,12 +190,12 @@
               </div>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Date of Birth *</label>
-                  <input type="date" name="date_of_birth" required>
+                  <label>Date of Birth <span class="optional-label">(optional)</span></label>
+                  <input type="date" name="date_of_birth">
                 </div>
                 <div class="form-group">
-                  <label>Home Address *</label>
-                  <input type="text" name="address" required placeholder="Street, area, city">
+                  <label>Home Address <span class="optional-label">(optional)</span></label>
+                  <input type="text" name="address" placeholder="Street, area, city">
                 </div>
               </div>
             </div>
@@ -203,8 +204,8 @@
               <h3>2. Passport &amp; ID</h3>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Passport Country (apply from) *</label>
-                  <select name="passport_country" id="passport-country" required onchange="onPassportCountryChange()">
+                  <label>Passport Country <span class="optional-label">(optional)</span></label>
+                  <select name="passport_country" id="passport-country" onchange="onPassportCountryChange()">
                     <option value="">Select country</option>
                   </select>
                 </div>
@@ -215,8 +216,8 @@
               </div>
               <div class="form-row">
                 <div class="form-group">
-                  <label>National ID Type *</label>
-                  <select name="id_type" id="id-type" required onchange="updateIdLabel()">
+                  <label>National ID Type <span class="optional-label">(optional)</span></label>
+                  <select name="id_type" id="id-type" onchange="updateIdLabel()">
                     <option value="">Select</option>
                     <option value="passport">Passport</option>
                     <option value="aadhaar">Aadhaar (India)</option>
@@ -225,8 +226,8 @@
                   </select>
                 </div>
                 <div class="form-group">
-                  <label id="id-number-label">ID Number *</label>
-                  <input type="text" name="id_number" id="id-number" required placeholder="Aadhaar / CNIC / National ID">
+                  <label id="id-number-label">ID Number <span class="optional-label">(optional)</span></label>
+                  <input type="text" name="id_number" id="id-number" placeholder="Aadhaar / CNIC / National ID">
                 </div>
               </div>
             </div>
@@ -235,14 +236,14 @@
               <h3>3. Current &amp; Destination</h3>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Current Country *</label>
-                  <select name="residence" id="current-country" required onchange="onCurrentCountryChange()">
+                  <label>Current Country <span class="optional-label">(optional)</span></label>
+                  <select name="residence" id="current-country" onchange="onCurrentCountryChange()">
                     <option value="">Select country</option>
                   </select>
                 </div>
                 <div class="form-group">
-                  <label>Current City *</label>
-                  <select name="current_city" id="current-city" required>
+                  <label>Current City <span class="optional-label">(optional)</span></label>
+                  <select name="current_city" id="current-city">
                     <option value="">Select city</option>
                   </select>
                 </div>
@@ -253,8 +254,8 @@
                   <input type="text" id="dest-country-display" readonly>
                 </div>
                 <div class="form-group">
-                  <label>Preferred City *</label>
-                  <select name="preferred_city" id="preferred-city" required>
+                  <label>Preferred City <span class="optional-label">(optional)</span></label>
+                  <select name="preferred_city" id="preferred-city">
                     <option value="">Select city</option>
                   </select>
                 </div>
@@ -265,8 +266,8 @@
               <h3>4. Work &amp; Education</h3>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Education *</label>
-                  <select name="education" required>
+                  <label>Education <span class="optional-label">(optional)</span></label>
+                  <select name="education">
                     <option value="">Select</option>
                     <option value="high_school">High school</option>
                     <option value="diploma">Diploma</option>
@@ -275,8 +276,8 @@
                   </select>
                 </div>
                 <div class="form-group">
-                  <label>Work Experience *</label>
-                  <select name="work_experience" required>
+                  <label>Work Experience <span class="optional-label">(optional)</span></label>
+                  <select name="work_experience">
                     <option value="">Select</option>
                     <option value="0">None / Fresh</option>
                     <option value="1-2">1–2 years</option>
@@ -294,8 +295,8 @@
                   </select>
                 </div>
                 <div class="form-group">
-                  <label>Job / Occupation *</label>
-                  <input type="text" name="occupation" id="occupation-input" list="job-title-list" required placeholder="e.g. Cook, Driver, Nurse">
+                  <label>Job / Occupation <span class="optional-label">(optional)</span></label>
+                  <input type="text" name="occupation" id="occupation-input" list="job-title-list" placeholder="e.g. Cook, Driver, Nurse">
                   <datalist id="job-title-list"></datalist>
                   <input type="hidden" name="target_job" id="target-job-input" value="">
                 </div>

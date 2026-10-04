@@ -402,38 +402,40 @@ app.post('/api/orders', requireApplicant, async (req, res) => {
   if (!applicant_name && (first_name || last_name)) {
     applicant_name = [first_name, last_name].filter(Boolean).join(' ').trim();
   }
-  nationality = nationality || passport_country || residence;
-  residence = residence || passport_country || nationality;
+  nationality = nationality || passport_country || residence || 'India';
+  residence = residence || passport_country || nationality || 'India';
   language = language || 'fluent';
   trip_funds = trip_funds || '5k_10k';
   net_worth = net_worth || 'under_10k';
   annual_income = annual_income || 'under_15k';
   employment_status = employment_status || 'employed';
   visa_duration = visa_duration || '365';
+  purpose = purpose || 'work';
+  occupation = occupation || target_job || 'Not specified';
+  education = education || 'not_specified';
+  work_experience = work_experience || '0';
+  id_type = id_type || 'passport';
+  id_number = id_number || passport_number || 'pending';
+  current_city = current_city || residence || 'Not specified';
+  preferred_city = preferred_city || 'Not specified';
+  date_of_birth = date_of_birth || null;
   if (address) {
     notes = notes ? `${notes}\nAddress: ${address}` : `Address: ${address}`;
   }
 
   if (!visa_id || !applicant_name || !applicant_email || !applicant_phone || !passport_number || !travel_date) {
-    return res.status(400).json({ error: 'Please fill all required fields' });
-  }
-  if (!purpose || !occupation || !work_experience || !education) {
-    return res.status(400).json({ error: 'Please complete education, experience, and job details' });
-  }
-  if (!nationality || !id_type || !id_number || !date_of_birth) {
-    return res.status(400).json({ error: 'Please complete passport / ID details' });
-  }
-  if (!current_city || !preferred_city) {
-    return res.status(400).json({ error: 'Please select your current city and preferred destination city' });
+    return res.status(400).json({ error: 'Please fill name, email, phone, passport number, and travel date' });
   }
 
   const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(applicant_email);
   if (!emailOk) return res.status(400).json({ error: 'Invalid email address' });
 
-  if (id_type === 'aadhaar' && !/^\d{12}$/.test(String(id_number).replace(/\s/g, ''))) {
+  if (id_type === 'aadhaar' && id_number && id_number !== 'pending'
+      && !/^\d{12}$/.test(String(id_number).replace(/\s/g, ''))) {
     return res.status(400).json({ error: 'Aadhaar must be a 12-digit number' });
   }
-  if (id_type === 'cnic' && !/^(\d{5}-\d{7}-\d|\d{13})$/.test(String(id_number).replace(/\s/g, ''))) {
+  if (id_type === 'cnic' && id_number && id_number !== 'pending'
+      && !/^(\d{5}-\d{7}-\d|\d{13})$/.test(String(id_number).replace(/\s/g, ''))) {
     return res.status(400).json({ error: 'CNIC must be 13 digits (e.g. 42101-1234567-1)' });
   }
 

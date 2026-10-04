@@ -1332,12 +1332,20 @@ a:hover { text-decoration: none; }
   position: relative;
 }
 
+.track-next-label {
+  margin: 0.35rem 0 0.75rem;
+  font-size: 0.95rem;
+  color: #334155;
+}
+
 .status-timeline.steps-4 .timeline-label,
-.status-timeline.steps-6 .timeline-label {
+.status-timeline.steps-6 .timeline-label,
+.status-timeline.steps-7 .timeline-label {
   font-size: 0.65rem;
 }
 
-.status-timeline.steps-6 .timeline-dot {
+.status-timeline.steps-6 .timeline-dot,
+.status-timeline.steps-7 .timeline-dot {
   width: 36px;
   height: 36px;
   font-size: 0.95rem;
@@ -2366,10 +2374,12 @@ a:hover { text-decoration: none; }
   align-items: stretch;
 }
 
-  .status-timeline.steps-6 {
+  .status-timeline.steps-6,
+  .status-timeline.steps-7 {
     flex-direction: column;
   }
-  .status-timeline.steps-6 .timeline-step {
+  .status-timeline.steps-6 .timeline-step,
+  .status-timeline.steps-7 .timeline-step {
     flex-direction: row;
   }
   .toast {

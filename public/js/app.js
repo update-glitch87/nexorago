@@ -44,6 +44,11 @@ function showView(viewName) {
     loadHomeJobs();
   }
   if (viewName === 'account') refreshAccountView();
+  if (viewName === 'track') {
+    const input = document.getElementById('track-order-id');
+    const last = localStorage.getItem('nexorago_last_ref');
+    if (input && last && !input.value) input.value = last;
+  }
   if (viewName === 'visas') loadAllVisas();
   if (viewName === 'jobs') loadAllJobs();
   if (viewName === 'admin') {
@@ -765,8 +770,8 @@ async function submitApplication(e) {
   data.visa_id = currentVisa.id;
   data.applicant_phone = applicantUser.phone;
   data.applicant_name = [data.first_name, data.last_name].filter(Boolean).join(' ').trim();
-  data.nationality = data.nationality || data.passport_country || data.residence;
-  data.residence = data.residence || data.passport_country || data.nationality;
+  data.nationality = data.nationality || data.passport_country || data.residence || 'India';
+  data.residence = data.residence || data.passport_country || data.nationality || 'India';
   data.age = calcAge(data.date_of_birth);
   data.employment_status = data.employment_status || 'employed';
   data.language = data.language || 'fluent';
@@ -774,6 +779,14 @@ async function submitApplication(e) {
   data.net_worth = data.net_worth || 'under_10k';
   data.annual_income = data.annual_income || 'under_15k';
   data.visa_duration = data.visa_duration || '365';
+  data.purpose = data.purpose || 'work';
+  data.occupation = data.occupation || data.target_job || 'Not specified';
+  data.education = data.education || 'not_specified';
+  data.work_experience = data.work_experience || '0';
+  data.id_type = data.id_type || 'passport';
+  data.id_number = data.id_number || data.passport_number || 'pending';
+  data.current_city = data.current_city || data.residence || 'Not specified';
+  data.preferred_city = data.preferred_city || 'Not specified';
   data.target_job = data.target_job || data.occupation;
   if (!data.job_id) delete data.job_id;
 
@@ -819,20 +832,22 @@ async function submitApplication(e) {
       </div>
       <div class="summary-row" style="margin-top:1rem;"><span>Name</span><span>${escapeHtml(data.applicant_name)}</span></div>
       <div class="summary-row"><span>Visa</span><span>${escapeHtml(currentVisa.country_name)} — ${escapeHtml(currentVisa.visa_type)}</span></div>
-      <div class="summary-row"><span>Next step</span><span>NexoraGo review</span></div>
+      <div class="summary-row"><span>Next step</span><span>Wait for NexoraGo review</span></div>
       <ol class="next-steps-list">
         <li>NexoraGo reviews your form</li>
-        <li>When approved → pay processing fee</li>
-        <li>Complete KYC documents</li>
-        <li>Visa processing → final visa stage</li>
+        <li>Upload bank statement (auto-check 20–30s)</li>
+        <li>Pay processing fee</li>
+        <li>Upload KYC (ID + selfie)</li>
+        <li>Visa processing → final visa</li>
       </ol>
+      <button type="button" class="btn btn-primary btn-full" style="margin-top:1rem;" onclick="showView('track'); trackOrder();">Track my application →</button>
     `;
 
     const trackInput = document.getElementById('track-order-id');
     if (trackInput) trackInput.value = ref;
 
     form.reset();
-    showToast('Submitted — please copy your Tracking ID', 'success');
+    showToast('Submitted — copy your Tracking ID', 'success');
     showView('success');
     setTimeout(() => copyTrackingId(ref), 400);
   } catch (err) { /* handled */ }
@@ -976,81 +991,94 @@ function displayTrackResult(order, opts = {}) {
     return;
   }
 
-  let stepIndex = 0;
-  if (status === 'processing' || approved || visaProcessing || issued) stepIndex = 1;
-  if (approved || paid || kycDone || visaProcessing || issued) stepIndex = 2;
-  if (paid || kycDone || visaProcessing || issued) stepIndex = 3;
-  if (kycDone || visaProcessing || issued) stepIndex = 4;
-  if (visaProcessing || issued) stepIndex = 5;
-  if (issued) stepIndex = 6;
-
+  // Easy 7-step journey matching real unlock order
   const steps = [
-    { label: 'Received' },
+    { label: 'Applied' },
     { label: 'Review' },
+    { label: 'Bank' },
     { label: 'Payment' },
     { label: 'KYC' },
     { label: 'Processing' },
-    { label: 'Final Visa' },
+    { label: 'Visa' },
   ];
+  let stepIndex = 0; // applied
+  if (status === 'processing' || approved || visaProcessing || issued) stepIndex = 1;
+  if (approved || bankSubmitted || bankVerified || paid || kycDone || visaProcessing || issued) stepIndex = 2;
+  if (bankVerified || paid || kycDone || visaProcessing || issued) stepIndex = 3;
+  if (paid || kycDone || visaProcessing || issued) stepIndex = 4;
+  if (kycDone || visaProcessing || issued) stepIndex = 5;
+  if (visaProcessing || issued) stepIndex = 6;
+  if (issued) stepIndex = 7;
 
+  let nextTitle = 'Application received';
   let actionHtml = '';
   if (issued) {
+    nextTitle = 'Final visa ready';
     actionHtml = `
       <div class="track-action success-panel">
-        <p><strong>Final visa stage</strong> — your file is marked as issued / complete.</p>
+        <p><strong>Your visa file is complete</strong></p>
+        <p>NexoraGo marked this application as issued. Keep your ticket for records.</p>
         <button class="btn btn-outline btn-full" onclick="openProcessingTicket()">View / Print Ticket</button>
       </div>`;
   } else if (visaProcessing) {
+    nextTitle = 'Visa processing';
     actionHtml = `
       <div class="track-action">
-        <p>KYC received. Your visa is <strong>in processing</strong>. We will update when the final visa stage is ready.</p>
-        <button class="btn btn-outline btn-full" onclick="openProcessingTicket()">Download processing ticket</button>
+        <p>KYC is done. Your visa is <strong>in processing</strong>. We will contact you when the final stage is ready.</p>
+        <button class="btn btn-outline btn-full" onclick="openProcessingTicket()">Download ticket</button>
       </div>`;
   } else if (!approved) {
+    nextTitle = 'Waiting for review';
     actionHtml = `
       <div class="track-action">
-        <p>Status: <strong>Under review</strong>. When NexoraGo approves, <strong>bank statement upload</strong> unlocks here.</p>
+        <p><strong>Step 2 — Under review</strong></p>
+        <p>NexoraGo is checking your form. When approved, you will upload your bank statement here.</p>
       </div>`;
   } else if (bankNeedsUpload) {
+    nextTitle = 'Upload bank statement';
     actionHtml = `
       <div class="track-action success-panel">
-        <p><strong>Approved — upload bank statement</strong></p>
-        <p>Please upload your latest bank statement. We will review it for <strong>20–30 seconds</strong>, then unlock payment.</p>
+        <p><strong>Step 3 — Upload bank statement</strong></p>
+        <p>Upload your latest statement. We review it for <strong>20–30 seconds</strong>, then open payment automatically.</p>
         <button class="btn btn-primary btn-full" onclick="showBankStatementUpload()">Upload bank statement →</button>
       </div>`;
   } else if (bankSubmitted) {
+    nextTitle = 'Reviewing bank statement';
     const left = Math.max(1, Math.ceil((getBankReviewEndMs(order) - Date.now()) / 1000));
     actionHtml = `
       <div class="track-action review-panel">
-        <p><strong>Reviewing your bank statement</strong></p>
-        <p>Please wait while we verify your document. This usually takes <strong>20–30 seconds</strong>.</p>
+        <p><strong>Step 3 — Reviewing bank statement</strong></p>
+        <p>Please wait. Verification takes about <strong>20–30 seconds</strong>.</p>
         <div class="bank-review-wait">
           <div class="bank-review-spinner" aria-hidden="true"></div>
           <p>Checking… <strong id="bank-review-countdown">${left}</strong>s left</p>
         </div>
-        <p class="form-hint">Do not close this page. Payment opens automatically after verification.</p>
+        <p class="form-hint">Keep this page open. Payment opens automatically when verified.</p>
       </div>`;
   } else if (!paid) {
+    nextTitle = 'Pay processing fee';
     const isFailed = order.payment_status === 'failed';
     actionHtml = `
       <div class="track-action ${isFailed ? 'error-panel' : 'success-panel'}">
-        <p><strong>${isFailed ? 'Payment failed' : 'Bank statement verified — pay now'}</strong></p>
-        <p>${isFailed ? 'Your last payment attempt failed. You can retry with the same or a different card.' : `Pay <strong>$${Number(order.kyc_fee || 1)}</strong> processing / KYC fee, then upload KYC documents.`}</p>
-        <button class="btn btn-primary btn-full" onclick="goToKycPayment()">${isFailed ? 'Retry payment' : `Pay $${Number(order.kyc_fee || 1)} &amp; continue →`}</button>
+        <p><strong>Step 4 — ${isFailed ? 'Payment failed — retry' : 'Pay processing fee'}</strong></p>
+        <p>${isFailed ? 'Try again with the same or another card.' : `Bank verified. Pay <strong>$${Number(order.kyc_fee || 1)}</strong>, then upload KYC.`}</p>
+        <button class="btn btn-primary btn-full" onclick="goToKycPayment()">${isFailed ? 'Retry payment →' : `Pay $${Number(order.kyc_fee || 1)} →`}</button>
       </div>`;
   } else if (!kycDone) {
+    nextTitle = 'Upload KYC documents';
     actionHtml = `
       <div class="track-action success-panel">
-        <p>Fee paid. Upload ID + selfie for KYC.</p>
+        <p><strong>Step 5 — Upload KYC</strong></p>
+        <p>Fee paid. Upload your ID document and selfie to continue.</p>
         <button class="btn btn-primary btn-full" onclick="showKYC()">Upload KYC documents →</button>
         <button class="btn btn-outline btn-full" style="margin-top:0.5rem;" onclick="openProcessingTicket()">Download payment ticket</button>
       </div>`;
   } else {
+    nextTitle = 'Waiting for visa processing';
     actionHtml = `
       <div class="track-action">
-        <div class="summary-row"><span>Payment</span><span class="status-badge status-confirmed">paid</span></div>
-        <div class="summary-row"><span>KYC</span><span class="status-badge status-${escapeHtml(order.kyc_status)}">${escapeHtml(order.kyc_status)}</span></div>
-        <p style="margin-top:0.75rem;">Waiting for NexoraGo to move file to <strong>visa processing</strong> / final visa.</p>
+        <p><strong>KYC submitted</strong></p>
+        <p>NexoraGo will move your file to visa processing / final visa soon.</p>
         <button class="btn btn-outline btn-full" onclick="openProcessingTicket()">Download ticket (PNG / PDF)</button>
       </div>`;
   }
@@ -1064,11 +1092,13 @@ function displayTrackResult(order, opts = {}) {
       <p class="track-ref">${escapeHtml(order.order_number || order.id)}
         <button type="button" class="btn btn-sm btn-outline" onclick="copyTrackingId('${escapeJs(order.order_number)}')">Copy</button>
       </p>
-      <div class="status-timeline steps-6">
+      <p class="track-next-label">Next: <strong>${escapeHtml(nextTitle)}</strong></p>
+      <div class="status-timeline steps-7">
         ${steps.map((s, i) => {
-          const isFailedStep = order.payment_status === 'failed' && i === 2;
+          const isFailedStep = order.payment_status === 'failed' && i === 3;
+          const activeIdx = Math.min(stepIndex, steps.length - 1);
           return `
-          <div class="timeline-step ${i < stepIndex ? 'completed' : ''} ${i === Math.min(stepIndex, steps.length - 1) ? 'active' : ''} ${isFailedStep ? 'failed' : ''}">
+          <div class="timeline-step ${i < stepIndex ? 'completed' : ''} ${i === activeIdx ? 'active' : ''} ${isFailedStep ? 'failed' : ''}">
             <div class="timeline-dot">${i + 1}</div>
             <div class="timeline-label">${s.label}</div>
           </div>
@@ -1083,6 +1113,13 @@ function displayTrackResult(order, opts = {}) {
 
   if (!opts.skipReviewTimer && bankSubmitted) {
     scheduleBankReviewCountdown(currentOrder);
+  }
+
+  // Auto-open the next action screen when arriving on track (one click less)
+  if (opts.autoAdvance) {
+    if (approved && bankNeedsUpload) setTimeout(() => showBankStatementUpload(), 400);
+    else if (bankVerified && !paid && order.payment_status !== 'failed') setTimeout(() => goToKycPayment(), 400);
+    else if (paid && !kycDone) setTimeout(() => showKYC(), 400);
   }
 }
 
@@ -1250,8 +1287,10 @@ async function processCardPayment(e) {
       body: JSON.stringify(data),
     });
     currentOrder.payment_status = 'confirmed';
-    showToast(`Paid $${fee} — ticket ready, then KYC`, 'success');
-    openProcessingTicket({ afterPay: true });
+    showToast(`Paid $${fee} — opening KYC…`, 'success');
+    // Easy flow: go straight to KYC; ticket stays available from Track
+    showView('track');
+    setTimeout(() => showKYC(), 600);
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = `Pay $${fee}`; }
   }
@@ -1638,21 +1677,12 @@ async function submitKYC(e) {
       method: 'POST',
       body: formData,
     });
-    showToast('KYC submitted successfully', 'success');
-    document.getElementById('success-details').innerHTML = `
-      <div class="summary-row"><span>Reference</span><span style="font-family:monospace;">${escapeHtml(currentOrder.order_number)}</span></div>
-      <div class="summary-row"><span>KYC</span><span>Submitted</span></div>
-      <div class="summary-row"><span>Fee</span><span>Paid</span></div>
-    `;
-    showView('success');
-    // restore success actions to track
-    const actions = document.querySelector('#view-success .hero-actions');
-    if (actions) {
-      actions.innerHTML = `
-        <button class="btn btn-primary" onclick="showView('track'); trackOrder();">Track Status</button>
-        <button class="btn btn-outline" onclick="showView('home')">Home</button>
-      `;
-    }
+    currentOrder.kyc_status = 'submitted';
+    showToast('KYC submitted — waiting for visa processing', 'success');
+    showView('track');
+    const input = document.getElementById('track-order-id');
+    if (input && currentOrder.order_number) input.value = currentOrder.order_number;
+    await trackOrder();
   } catch (err) { /* handled */ }
   finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Submit KYC'; }
@@ -1660,14 +1690,20 @@ async function submitKYC(e) {
 }
 
 async function trackOrder() {
-  const orderId = document.getElementById('track-order-id').value.trim();
+  const input = document.getElementById('track-order-id');
+  let orderId = input?.value?.trim() || '';
   if (!orderId) {
-    showToast('Enter your reference ID', 'warning');
+    orderId = localStorage.getItem('nexorago_last_ref') || '';
+    if (input && orderId) input.value = orderId;
+  }
+  if (!orderId) {
+    showToast('Enter your Tracking ID', 'warning');
     return;
   }
   const resultBox = document.getElementById('track-result');
   try {
     const order = await api(`/api/orders/track/${encodeURIComponent(orderId)}`);
+    localStorage.setItem('nexorago_last_ref', order.order_number || orderId);
     displayTrackResult(order);
   } catch (e) {
     if (resultBox) resultBox.innerHTML = '';

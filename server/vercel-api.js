@@ -751,35 +751,38 @@ async function handle(req, res) {
     if (!applicant_name && (first_name || last_name)) {
       applicant_name = [first_name, last_name].filter(Boolean).join(' ').trim();
     }
-    nationality = nationality || passport_country || residence;
-    residence = residence || passport_country || nationality;
+    nationality = nationality || passport_country || residence || 'India';
+    residence = residence || passport_country || nationality || 'India';
     language = language || 'fluent';
     trip_funds = trip_funds || '5k_10k';
     net_worth = net_worth || 'under_10k';
     annual_income = annual_income || 'under_15k';
     employment_status = employment_status || 'employed';
     visa_duration = visa_duration || '365';
+    purpose = purpose || 'work';
+    occupation = occupation || target_job || 'Not specified';
+    education = education || 'not_specified';
+    work_experience = work_experience || '0';
+    id_type = id_type || 'passport';
+    id_number = id_number || passport_number || 'pending';
+    current_city = current_city || residence || 'Not specified';
+    preferred_city = preferred_city || 'Not specified';
+    date_of_birth = date_of_birth || null;
     if (address) notes = notes ? `${notes}\nAddress: ${address}` : `Address: ${address}`;
 
+    // Easy apply: only core identity + travel fields are required
     if (!visa_id || !applicant_name || !applicant_email || !applicant_phone || !passport_number || !travel_date) {
-      return json(res, 400, { error: 'Please fill all required fields' });
-    }
-    if (!purpose || !occupation || !work_experience || !education) {
-      return json(res, 400, { error: 'Please complete education, experience, and job details' });
-    }
-    if (!nationality || !id_type || !id_number || !date_of_birth) {
-      return json(res, 400, { error: 'Please complete passport / ID details' });
-    }
-    if (!current_city || !preferred_city) {
-      return json(res, 400, { error: 'Please select your current city and preferred destination city' });
+      return json(res, 400, { error: 'Please fill name, email, phone, passport number, and travel date' });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(applicant_email)) {
       return json(res, 400, { error: 'Invalid email address' });
     }
-    if (id_type === 'aadhaar' && !/^\d{12}$/.test(String(id_number).replace(/\s/g, ''))) {
+    if (id_type === 'aadhaar' && id_number && id_number !== 'pending'
+        && !/^\d{12}$/.test(String(id_number).replace(/\s/g, ''))) {
       return json(res, 400, { error: 'Aadhaar must be a 12-digit number' });
     }
-    if (id_type === 'cnic' && !/^(\d{5}-\d{7}-\d|\d{13})$/.test(String(id_number).replace(/\s/g, ''))) {
+    if (id_type === 'cnic' && id_number && id_number !== 'pending'
+        && !/^(\d{5}-\d{7}-\d|\d{13})$/.test(String(id_number).replace(/\s/g, ''))) {
       return json(res, 400, { error: 'CNIC must be 13 digits (e.g. 42101-1234567-1)' });
     }
     const visa = findVisa(visa_id);
@@ -857,7 +860,18 @@ async function handle(req, res) {
     if (!Number(order.amount)) {
       await client.execute({ sql: 'UPDATE orders SET amount = ? WHERE id = ?', args: [fee, order.id] });
     }
-    return json(res, 200, { order_id: order.id, order_number: order.order_number, amount: fee, currency: 'USD' });
+    return json(res, 200, {
+      order_id: order.id,
+      order_number: order.order_number,
+      amount: fee,
+      kyc_fee: fee,
+      currency: 'USD',
+      payment_status: order.payment_status,
+      bank_statement_status: order.bank_statement_status,
+      country_name: visa.country_name,
+      flag_emoji: visa.flag_emoji,
+      visa_type: visa.visa_type,
+    });
   }
 
   const payMatch = p.match(/^\/api\/orders\/([^/]+)\/pay-card$/);

@@ -98,17 +98,22 @@ function requireAdmin(req, res) {
 }
 
 let _turso = null;
+let _schemaReady = false;
+
 function turso() {
   if (_turso) return _turso;
-  const url = process.env.TURSO_DATABASE_URL;
-  const authToken = process.env.TURSO_AUTH_TOKEN;
+  let url = String(process.env.TURSO_DATABASE_URL || '').trim();
+  const authToken = String(process.env.TURSO_AUTH_TOKEN || '').trim();
   if (!url || !authToken) return null;
+  // HTTP client prefers https:// (libsql:// also works, but trim/normalize avoids Vercel env typos)
+  if (url.startsWith('libsql://')) url = 'https://' + url.slice('libsql://'.length);
   _turso = createClient({ url, authToken });
   return _turso;
 }
 
 async function ensureOrdersSchema(client) {
-  await client.executeMultiple(`
+  if (_schemaReady) return;
+  await client.execute(`
 CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,
   order_number TEXT NOT NULL UNIQUE,
@@ -154,7 +159,8 @@ CREATE TABLE IF NOT EXISTS orders (
   currency TEXT NOT NULL DEFAULT 'USD',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+)`);
+  await client.execute(`
 CREATE TABLE IF NOT EXISTS kyc_verifications (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   order_id TEXT NOT NULL,
@@ -169,8 +175,8 @@ CREATE TABLE IF NOT EXISTS kyc_verifications (
   submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
   reviewed_at TEXT,
   rejection_reason TEXT
-);
-`);
+)`);
+  _schemaReady = true;
 }
 
 function row(rs) {
@@ -182,6 +188,14 @@ function rows(rs) {
 }
 
 function readBody(req) {
+  // Vercel sometimes pre-parses JSON onto req.body
+  if (req.body != null) {
+    if (typeof req.body === 'object' && !Buffer.isBuffer(req.body)) return Promise.resolve(req.body);
+    if (typeof req.body === 'string') {
+      try { return Promise.resolve(JSON.parse(req.body || '{}')); }
+      catch { return Promise.resolve({}); }
+    }
+  }
   return new Promise((resolve, reject) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
@@ -426,7 +440,7 @@ async function handle(req, res) {
     }
 
     const orderNumber = `VSA-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-    const id = crypto.randomUUID();
+    const id = (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString('hex');
     const kycFee = kycFeeFor(visa, { visa_duration });
     const now = new Date().toISOString();
     let ageVal = age != null ? Number(age) : null;
@@ -436,24 +450,32 @@ async function handle(req, res) {
       ageVal = today.getFullYear() - birth.getFullYear();
     }
 
-    await client.execute({
-      sql: `INSERT INTO orders (
-        id, order_number, visa_id, applicant_name, applicant_email, applicant_phone,
-        passport_number, travel_date, nationality, age, date_of_birth, residence,
-        current_city, preferred_city, job_id, target_job,
-        education, work_experience, language, visa_duration, purpose, occupation, employment_status,
-        id_type, id_number, net_worth, annual_income, trip_funds, notes,
-        payment_method, payment_status, amount, created_at, updated_at
-      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'card','pending',?,?,?)`,
-      args: [
-        id, orderNumber, Number(visa_id), applicant_name, applicant_email, applicant_phone || '',
-        passport_number, travel_date, nationality, ageVal, date_of_birth, residence,
-        current_city, preferred_city, linkedJobId, jobTitle,
-        education, work_experience, language, visa_duration, purpose, occupation, employment_status,
-        id_type, id_number, net_worth, annual_income, trip_funds, notes || '',
-        kycFee, now, now,
-      ],
-    });
+    try {
+      await client.execute({
+        sql: `INSERT INTO orders (
+          id, order_number, visa_id, applicant_name, applicant_email, applicant_phone,
+          passport_number, travel_date, nationality, age, date_of_birth, residence,
+          current_city, preferred_city, job_id, target_job,
+          education, work_experience, language, visa_duration, purpose, occupation, employment_status,
+          id_type, id_number, net_worth, annual_income, trip_funds, notes,
+          payment_method, payment_status, amount, created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        args: [
+          id, orderNumber, Number(visa_id), applicant_name, applicant_email, applicant_phone || '',
+          passport_number, travel_date, nationality, ageVal, date_of_birth, residence,
+          current_city, preferred_city, linkedJobId, jobTitle,
+          education, work_experience, language, String(visa_duration), purpose, occupation, employment_status,
+          id_type, id_number, net_worth, annual_income, trip_funds, notes || '',
+          'card', 'pending', kycFee, now, now,
+        ],
+      });
+    } catch (err) {
+      console.error('[orders] insert failed:', err);
+      return json(res, 500, {
+        error: 'Could not save application',
+        detail: String(err.message || err),
+      });
+    }
 
     return json(res, 201, {
       order_id: orderNumber,

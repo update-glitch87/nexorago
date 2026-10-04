@@ -11,7 +11,11 @@ module.exports = async (req, res) => {
     if (!res.headersSent) {
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ error: 'Request failed', detail: String(err.message || err) }));
+      res.end(JSON.stringify({
+        error: 'Request failed',
+        detail: String(err.message || err),
+        tip: 'Check TURSO_DATABASE_URL / TURSO_AUTH_TOKEN match your Turso dashboard, then Redeploy',
+      }));
     }
   }
 };

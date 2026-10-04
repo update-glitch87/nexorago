@@ -88,7 +88,10 @@ async function api(url, options = {}) {
         localStorage.removeItem('nexorago_admin_token');
       }
       const msg = data.error || data.detail || `Request failed (${res.status})`;
-      throw new Error(typeof msg === 'string' ? msg : 'Request failed');
+      const full = data.detail && data.error && data.detail !== data.error
+        ? `${data.error}: ${data.detail}`
+        : (typeof msg === 'string' ? msg : 'Request failed');
+      throw new Error(full);
     }
     return data;
   } catch (err) {

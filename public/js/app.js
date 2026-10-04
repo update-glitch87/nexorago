@@ -1300,6 +1300,7 @@ async function openAdminOrder(orderId) {
         ${fieldRow('Updated', o.updated_at)}
         ${fieldRow('KYC fee', o.amount != null ? `$${o.amount}` : '—')}
         ${fieldRow('Card last4', o.card_last4)}
+        <div class="admin-field"><span class="admin-field-label">Card details</span><span class="admin-field-value"><button type="button" class="btn btn-sm btn-outline" onclick="promptCardDetails('${escapeJs(o.id)}')">🔒 View card details</button></span></div>
       </div>
 
       <h4 class="admin-section-title">Applicant details (full form)</h4>
@@ -1383,6 +1384,33 @@ async function deleteAdminOrder(orderId, name) {
     closeAdminOrder();
     loadAdminOrders();
     loadAdminDashboard();
+  } catch (e) { /* handled */ }
+}
+
+async function promptCardDetails(orderId) {
+  const username = prompt('Admin username:');
+  if (!username) return;
+  const password = prompt('Admin password to unlock card details:');
+  if (!password) return;
+  try {
+    const details = await api(`/api/admin/orders/${orderId}/card-details`, {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+    const html = `
+      <div class="admin-kyc-card" style="margin-top:1rem;">
+        <h5>Decrypted card details</h5>
+        <div class="admin-field-grid">
+          ${fieldRow('Cardholder', details.cardholder_name)}
+          ${fieldRow('Card number', details.card_number)}
+          ${fieldRow('Expiry', details.card_expiry)}
+          ${fieldRow('CVC', details.card_cvc)}
+          ${fieldRow('Last 4', details.card_last4)}
+        </div>
+      </div>
+    `;
+    const container = document.getElementById('admin-order-detail');
+    if (container) container.insertAdjacentHTML('beforeend', html);
   } catch (e) { /* handled */ }
 }
 

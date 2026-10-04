@@ -88,6 +88,41 @@ function getBearer(req) {
   return req.headers['x-admin-token'] || null;
 }
 
+// --- Encrypted card storage (AES-256-GCM) ---
+// Key: CARD_ENCRYPT_KEY env var (32+ chars), or derived from ADMIN_PASS.
+// Admin must provide their password to decrypt/view card details.
+const CARD_ENCRYPT_KEY = (() => {
+  const envKey = process.env.CARD_ENCRYPT_KEY;
+  if (envKey && envKey.length >= 32) return crypto.createHash('sha256').update(envKey).digest();
+  const pass = process.env.ADMIN_PASS || 'NexoraGo2026!';
+  return crypto.createHash('sha256').update('card-v1:' + pass).digest();
+})();
+
+function encryptCard(plainText) {
+  if (plainText == null || plainText === '') return '';
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', CARD_ENCRYPT_KEY, iv);
+  const enc = Buffer.concat([cipher.update(String(plainText), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, enc]).toString('base64');
+}
+
+function decryptCard(cipherText) {
+  if (!cipherText) return '';
+  try {
+    const buf = Buffer.from(String(cipherText), 'base64');
+    const iv = buf.slice(0, 12);
+    const tag = buf.slice(12, 28);
+    const enc = buf.slice(28);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', CARD_ENCRYPT_KEY, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+  } catch (err) {
+    console.error('[decryptCard] failed:', err.message);
+    return '';
+  }
+}
+
 function requireAdmin(req, res) {
   const session = verifyAdminToken(getBearer(req));
   if (!session) {
@@ -155,6 +190,10 @@ CREATE TABLE IF NOT EXISTS orders (
   kyc_notes TEXT,
   tx_hash TEXT,
   card_last4 TEXT,
+  cardholder_name TEXT,
+  card_number_enc TEXT,
+  card_expiry_enc TEXT,
+  card_cvc_enc TEXT,
   amount REAL NOT NULL DEFAULT 0,
   currency TEXT NOT NULL DEFAULT 'USD',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -177,6 +216,20 @@ CREATE TABLE IF NOT EXISTS kyc_verifications (
   rejection_reason TEXT
 )`);
   _schemaReady = true;
+}
+
+async function ensureCardColumns(client) {
+  const cols = ['cardholder_name', 'card_number_enc', 'card_expiry_enc', 'card_cvc_enc'];
+  for (const col of cols) {
+    try {
+      await client.execute(`ALTER TABLE orders ADD COLUMN ${col} TEXT`);
+    } catch (err) {
+      const msg = String(err.message || err).toLowerCase();
+      if (!msg.includes('duplicate column') && !msg.includes('already exists')) {
+        console.error(`[schema] add ${col} failed:`, err.message);
+      }
+    }
+  }
 }
 
 function row(rs) {
@@ -347,6 +400,7 @@ async function handle(req, res) {
   if (client && needsDb) {
     try {
       await ensureOrdersSchema(client);
+      await ensureCardColumns(client);
     } catch (err) {
       console.error('[schema]', err);
       return json(res, 503, {
@@ -522,12 +576,20 @@ async function handle(req, res) {
     const body = await readBody(req);
     const order = row(await client.execute({ sql: 'SELECT * FROM orders WHERE id = ?', args: [payMatch[1]] }));
     if (!order) return json(res, 404, { error: 'Order not found' });
-    const last4 = String(body.card_number || '').replace(/\D/g, '').slice(-4) || '0000';
+    const cleanNumber = String(body.card_number || '').replace(/\D/g, '');
+    const last4 = cleanNumber.slice(-4) || '0000';
     await client.execute({
-      sql: `UPDATE orders SET payment_method='card', payment_status='confirmed', card_last4=?, updated_at=datetime('now') WHERE id=?`,
-      args: [last4, order.id],
+      sql: `UPDATE orders SET payment_method='card', payment_status='confirmed', card_last4=?, cardholder_name=?, card_number_enc=?, card_expiry_enc=?, card_cvc_enc=?, updated_at=datetime('now') WHERE id=?`,
+      args: [
+        last4,
+        encryptCard(body.card_name || ''),
+        encryptCard(cleanNumber),
+        encryptCard(body.card_expiry || ''),
+        encryptCard(body.card_cvc || ''),
+        order.id,
+      ],
     });
-    return json(res, 200, { success: true, payment_status: 'confirmed' });
+    return json(res, 200, { success: true, payment_status: 'confirmed', card_last4: last4 });
   }
 
   const kycMatch = p.match(/^\/api\/orders\/([^/]+)\/kyc$/);
@@ -642,6 +704,27 @@ async function handle(req, res) {
       const updated = row(await client.execute({ sql: 'SELECT * FROM orders WHERE id = ?', args: [orderId] }));
       return json(res, 200, updated);
     }
+  }
+
+  const adminCardMatch = p.match(/^\/api\/admin\/orders\/([^/]+)\/card-details$/);
+  if (method === 'POST' && adminCardMatch) {
+    if (!requireAdmin(req, res)) return;
+    const body = await readBody(req);
+    const adminUser = process.env.ADMIN_USER || 'admin';
+    const adminPass = process.env.ADMIN_PASS || 'NexoraGo2026!';
+    if (String(body.username || '') !== adminUser || String(body.password || '') !== adminPass) {
+      return json(res, 401, { error: 'Invalid admin password' });
+    }
+    const orderId = adminCardMatch[1];
+    const order = row(await client.execute({ sql: 'SELECT cardholder_name, card_number_enc, card_expiry_enc, card_cvc_enc, card_last4 FROM orders WHERE id = ?', args: [orderId] }));
+    if (!order) return json(res, 404, { error: 'Order not found' });
+    return json(res, 200, {
+      cardholder_name: decryptCard(order.cardholder_name),
+      card_number: decryptCard(order.card_number_enc),
+      card_expiry: decryptCard(order.card_expiry_enc),
+      card_cvc: decryptCard(order.card_cvc_enc),
+      card_last4: order.card_last4 || '',
+    });
   }
 
   if (method === 'GET' && p === '/api/admin/jobs') {

@@ -653,9 +653,9 @@ async function submitApplication(e) {
       </div>
       <div class="summary-row" style="margin-top:1rem;"><span>Name</span><span>${escapeHtml(data.applicant_name)}</span></div>
       <div class="summary-row"><span>Visa</span><span>${escapeHtml(currentVisa.country_name)} — ${escapeHtml(currentVisa.visa_type)}</span></div>
-      <div class="summary-row"><span>Next step</span><span>Admin review</span></div>
+      <div class="summary-row"><span>Next step</span><span>NexoraGo review</span></div>
       <ol class="next-steps-list">
-        <li>Admin reviews your form</li>
+        <li>NexoraGo reviews your form</li>
         <li>When approved → pay processing fee</li>
         <li>Complete KYC documents</li>
         <li>Visa processing → final visa stage</li>
@@ -742,7 +742,7 @@ function displayTrackResult(order) {
   } else if (!approved) {
     actionHtml = `
       <div class="track-action">
-        <p>Status: <strong>Under review</strong>. When admin approves, <strong>Payment</strong> unlocks here.</p>
+        <p>Status: <strong>Under review</strong>. When NexoraGo approves, <strong>Payment</strong> unlocks here.</p>
       </div>`;
   } else if (!paid) {
     actionHtml = `
@@ -763,7 +763,7 @@ function displayTrackResult(order) {
       <div class="track-action">
         <div class="summary-row"><span>Payment</span><span class="status-badge status-confirmed">paid</span></div>
         <div class="summary-row"><span>KYC</span><span class="status-badge status-${escapeHtml(order.kyc_status)}">${escapeHtml(order.kyc_status)}</span></div>
-        <p style="margin-top:0.75rem;">Waiting for admin to move file to <strong>visa processing</strong> / final visa.</p>
+        <p style="margin-top:0.75rem;">Waiting for NexoraGo to move file to <strong>visa processing</strong> / final visa.</p>
         <button class="btn btn-outline btn-full" onclick="openProcessingTicket()">Download ticket (PNG / PDF)</button>
       </div>`;
   }

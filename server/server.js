@@ -664,7 +664,7 @@ app.get('/api/admin/orders/:id', requireAdmin, (req, res) => {
     SELECT * FROM kyc_verifications WHERE order_id = ? ORDER BY submitted_at DESC
   `).all(order.id);
 
-  res.json({ ...order, kyc_submissions: kyc });
+  res.json({ ...order, has_card: !!(order.card_number_enc && order.card_number_enc.length > 0), kyc_submissions: kyc });
 });
 
 app.patch('/api/admin/orders/:id', requireAdmin, async (req, res) => {

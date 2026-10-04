@@ -690,7 +690,15 @@ async function handle(req, res) {
       if (!order) return json(res, 404, { error: 'Order not found' });
       const v = findVisa(order.visa_id) || {};
       const kyc = rows(await client.execute({ sql: 'SELECT * FROM kyc_verifications WHERE order_id = ?', args: [orderId] }));
-      return json(res, 200, { ...order, country_name: v.country_name, flag_emoji: v.flag_emoji, visa_type: v.visa_type, kyc });
+      return json(res, 200, {
+        ...order,
+        country_name: v.country_name,
+        flag_emoji: v.flag_emoji,
+        visa_type: v.visa_type,
+        visa_category: v.category,
+        has_card: !!(order.card_number_enc && order.card_number_enc.length > 0),
+        kyc,
+      });
     }
     if (method === 'DELETE') {
       await client.execute({ sql: 'DELETE FROM kyc_verifications WHERE order_id = ?', args: [orderId] });

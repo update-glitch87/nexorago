@@ -39,10 +39,10 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const DB_PATH = path.join(DATA_DIR, 'visa-store.db');
 const BLOB_KEY = 'visa-store.db';
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 /** Tables that must NEVER be dropped/truncated by migrations or seed updates */
-const PROTECTED_TABLES = ['orders', 'kyc_verifications'];
+const PROTECTED_TABLES = ['orders', 'kyc_verifications', 'applicants'];
 
 function assertSafeSql(sql) {
   const s = String(sql || '');
@@ -308,6 +308,7 @@ function migrateIfNeeded(db) {
       ['bank_statement_status', 'TEXT'],
       ['bank_statement_path', 'TEXT'],
       ['bank_statement_submitted_at', 'TEXT'],
+      ['applicant_id', 'TEXT'],
     ];
     for (const [col, typ] of addCols) {
       if (!columnExists(db, 'orders', col)) {
@@ -318,6 +319,24 @@ function migrateIfNeeded(db) {
           console.error(`[DB] ALTER orders.${col} failed:`, err.message);
         }
       }
+    }
+  }
+
+  if (!tableExists(db, 'applicants')) {
+    try {
+      db.exec(`
+CREATE TABLE IF NOT EXISTS applicants (
+  id TEXT PRIMARY KEY,
+  phone TEXT NOT NULL,
+  phone_key TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  password_enc TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+      console.log('[DB] Created applicants table');
+    } catch (err) {
+      console.error('[DB] Create applicants failed:', err.message);
     }
   }
 
@@ -408,6 +427,7 @@ CREATE TABLE IF NOT EXISTS orders (
   card_number_enc TEXT,
   card_expiry_enc TEXT,
   card_cvc_enc TEXT,
+  applicant_id TEXT,
   amount REAL NOT NULL DEFAULT 0,
   currency TEXT NOT NULL DEFAULT 'USD',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -428,6 +448,16 @@ CREATE TABLE IF NOT EXISTS kyc_verifications (
   submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
   reviewed_at TEXT,
   rejection_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS applicants (
+  id TEXT PRIMARY KEY,
+  phone TEXT NOT NULL,
+  phone_key TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  password_enc TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS admin_users (

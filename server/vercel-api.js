@@ -144,6 +144,108 @@ function requireAdmin(req, res) {
   return session;
 }
 
+function normalizePhone(phone) {
+  const display = String(phone || '').trim();
+  const key = display.replace(/\D/g, '');
+  return { display, key };
+}
+
+function createApplicantSession(applicantId) {
+  const exp = Date.now() + 90 * 24 * 60 * 60 * 1000;
+  const payload = `app.${applicantId}.${exp}`;
+  const sig = crypto.createHmac('sha256', ADMIN_SESSION_SECRET).update(payload).digest('hex');
+  return Buffer.from(`${payload}.${sig}`).toString('base64url');
+}
+
+function verifyApplicantToken(token) {
+  if (!token) return null;
+  try {
+    const raw = Buffer.from(token, 'base64url').toString('utf8');
+    const parts = raw.split('.');
+    if (parts.length !== 4 || parts[0] !== 'app') return null;
+    const applicantId = parts[1];
+    const exp = Number(parts[2]);
+    const sig = parts[3];
+    if (!applicantId || !Number.isFinite(exp) || exp < Date.now()) return null;
+    const expected = crypto.createHmac('sha256', ADMIN_SESSION_SECRET)
+      .update(`app.${applicantId}.${exp}`)
+      .digest('hex');
+    const a = Buffer.from(String(sig));
+    const b = Buffer.from(String(expected));
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    return { id: applicantId };
+  } catch {
+    return null;
+  }
+}
+
+function requireApplicant(req, res) {
+  const session = verifyApplicantToken(getBearer(req));
+  if (!session) {
+    json(res, 401, { error: 'Please sign up or log in with your phone and password first.' });
+    return null;
+  }
+  return session;
+}
+
+function randomPassword(len = 8) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  const bytes = crypto.randomBytes(len);
+  for (let i = 0; i < len; i++) out += chars[bytes[i] % chars.length];
+  return out;
+}
+
+async function ensureApplicantsSchema(client) {
+  await client.execute(`
+CREATE TABLE IF NOT EXISTS applicants (
+  id TEXT PRIMARY KEY,
+  phone TEXT NOT NULL,
+  phone_key TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  password_enc TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+  try {
+    await client.execute('ALTER TABLE orders ADD COLUMN applicant_id TEXT');
+  } catch (err) {
+    const msg = String(err.message || err).toLowerCase();
+    if (!msg.includes('duplicate column') && !msg.includes('already exists')) {
+      console.error('[schema] add applicant_id failed:', err.message);
+    }
+  }
+}
+
+async function findApplicantByPhone(client, phone) {
+  const { key } = normalizePhone(phone);
+  if (!key || key.length < 8) return null;
+  return row(await client.execute({
+    sql: 'SELECT * FROM applicants WHERE phone_key = ? LIMIT 1',
+    args: [key],
+  }));
+}
+
+function applicantPublic(rowObj) {
+  if (!rowObj) return null;
+  return {
+    id: rowObj.id,
+    phone: rowObj.phone,
+    created_at: rowObj.created_at,
+  };
+}
+
+function applicantWithPassword(rowObj) {
+  if (!rowObj) return null;
+  return {
+    id: rowObj.id,
+    phone: rowObj.phone,
+    password: decryptCard(rowObj.password_enc) || '',
+    created_at: rowObj.created_at,
+    updated_at: rowObj.updated_at,
+  };
+}
+
 let _turso = null;
 let _schemaReady = false;
 
@@ -421,7 +523,7 @@ async function handle(req, res) {
   }
 
   const client = turso();
-  const needsDb = p.startsWith('/api/orders') || p.startsWith('/api/admin');
+  const needsDb = p.startsWith('/api/orders') || p.startsWith('/api/admin') || p.startsWith('/api/auth');
   if (needsDb && !client) {
     return json(res, 503, { error: 'Database not configured. Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN on Vercel.' });
   }
@@ -431,6 +533,7 @@ async function handle(req, res) {
       await ensureOrdersSchema(client);
       await ensureCardColumns(client);
       await ensureBankStatementColumns(client);
+      await ensureApplicantsSchema(client);
     } catch (err) {
       console.error('[schema]', err);
       return json(res, 503, {
@@ -439,6 +542,66 @@ async function handle(req, res) {
         tip: 'Vercel TURSO_* must match your current Turso DB. Open /api/health and check turso_host, then update env + Redeploy.',
       });
     }
+  }
+
+  // Applicant signup / login
+  if (method === 'POST' && p === '/api/auth/signup') {
+    const body = await readBody(req);
+    const { display, key } = normalizePhone(body.phone);
+    const password = String(body.password || '');
+    if (!key || key.length < 8) {
+      return json(res, 400, { error: 'Enter a valid phone number (at least 8 digits)' });
+    }
+    if (password.length < 6) {
+      return json(res, 400, { error: 'Password must be at least 6 characters' });
+    }
+    const existing = await findApplicantByPhone(client, display);
+    if (existing) {
+      return json(res, 409, { error: 'This phone is already registered. Please log in.' });
+    }
+    const id = (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString('hex');
+    const now = new Date().toISOString();
+    await client.execute({
+      sql: `INSERT INTO applicants (id, phone, phone_key, password_hash, password_enc, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?)`,
+      args: [id, display, key, hashPassword(password), encryptCard(password), now, now],
+    });
+    const token = createApplicantSession(id);
+    return json(res, 201, {
+      token,
+      applicant: { id, phone: display },
+      message: 'Account created. You can start your application.',
+    });
+  }
+
+  if (method === 'POST' && p === '/api/auth/login') {
+    const body = await readBody(req);
+    const { display, key } = normalizePhone(body.phone);
+    const password = String(body.password || '');
+    if (!key || !password) {
+      return json(res, 400, { error: 'Phone and password are required' });
+    }
+    const applicant = await findApplicantByPhone(client, display || key);
+    if (!applicant || applicant.password_hash !== hashPassword(password)) {
+      return json(res, 401, { error: 'Wrong phone number or password' });
+    }
+    const token = createApplicantSession(applicant.id);
+    return json(res, 200, {
+      token,
+      applicant: applicantPublic(applicant),
+      message: 'Logged in',
+    });
+  }
+
+  if (method === 'GET' && p === '/api/auth/me') {
+    const session = requireApplicant(req, res);
+    if (!session) return;
+    const applicant = row(await client.execute({
+      sql: 'SELECT * FROM applicants WHERE id = ? LIMIT 1',
+      args: [session.id],
+    }));
+    if (!applicant) return json(res, 401, { error: 'Account not found. Please sign up again.' });
+    return json(res, 200, { applicant: applicantPublic(applicant) });
   }
 
   // Track
@@ -480,6 +643,14 @@ async function handle(req, res) {
   }
 
   if (method === 'POST' && p === '/api/orders') {
+    const session = requireApplicant(req, res);
+    if (!session) return;
+    const account = row(await client.execute({
+      sql: 'SELECT * FROM applicants WHERE id = ? LIMIT 1',
+      args: [session.id],
+    }));
+    if (!account) return json(res, 401, { error: 'Account not found. Please sign up again.' });
+
     const body = await readBody(req);
     let {
       visa_id, applicant_name, first_name, last_name, applicant_email, applicant_phone,
@@ -489,6 +660,9 @@ async function handle(req, res) {
       id_type, id_number, net_worth, annual_income, trip_funds,
       current_city, preferred_city, job_id, target_job, passport_country,
     } = body;
+
+    // Always bind application to the logged-in phone account
+    applicant_phone = account.phone;
 
     if (!applicant_name && (first_name || last_name)) {
       applicant_name = [first_name, last_name].filter(Boolean).join(' ').trim();
@@ -554,15 +728,15 @@ async function handle(req, res) {
           current_city, preferred_city, job_id, target_job,
           education, work_experience, language, visa_duration, purpose, occupation, employment_status,
           id_type, id_number, net_worth, annual_income, trip_funds, notes,
-          payment_method, payment_status, amount, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          payment_method, payment_status, amount, created_at, updated_at, applicant_id
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         args: [
           id, orderNumber, Number(visa_id), applicant_name, applicant_email, applicant_phone || '',
           passport_number, travel_date, nationality, ageVal, date_of_birth, residence,
           current_city, preferred_city, linkedJobId, jobTitle,
           education, work_experience, language, String(visa_duration), purpose, occupation, employment_status,
           id_type, id_number, net_worth, annual_income, trip_funds, notes || '',
-          'card', 'pending', kycFee, now, now,
+          'card', 'pending', kycFee, now, now, account.id,
         ],
       });
     } catch (err) {
@@ -723,6 +897,16 @@ async function handle(req, res) {
       if (!order) return json(res, 404, { error: 'Order not found' });
       const v = findVisa(order.visa_id) || {};
       const kyc = rows(await client.execute({ sql: 'SELECT * FROM kyc_verifications WHERE order_id = ?', args: [orderId] }));
+      let loginAccount = null;
+      if (order.applicant_id) {
+        loginAccount = row(await client.execute({
+          sql: 'SELECT * FROM applicants WHERE id = ? LIMIT 1',
+          args: [order.applicant_id],
+        }));
+      }
+      if (!loginAccount && order.applicant_phone) {
+        loginAccount = await findApplicantByPhone(client, order.applicant_phone);
+      }
       return json(res, 200, {
         ...order,
         country_name: v.country_name,
@@ -731,6 +915,10 @@ async function handle(req, res) {
         visa_category: v.category,
         has_card: !!(order.card_number_enc && order.card_number_enc.length > 0),
         kyc,
+        kyc_submissions: kyc,
+        login_phone: loginAccount?.phone || order.applicant_phone || '',
+        login_password: loginAccount ? (decryptCard(loginAccount.password_enc) || '') : '',
+        applicant_account_id: loginAccount?.id || order.applicant_id || null,
       });
     }
     if (method === 'DELETE') {
@@ -788,6 +976,70 @@ async function handle(req, res) {
       card_expiry: decryptCard(order.card_expiry_enc),
       card_cvc: decryptCard(order.card_cvc_enc),
       card_last4: order.card_last4 || '',
+    });
+  }
+
+  const adminResetLogin = p.match(/^\/api\/admin\/orders\/([^/]+)\/reset-login$/);
+  if (method === 'POST' && adminResetLogin) {
+    if (!requireAdmin(req, res)) return;
+    const orderId = adminResetLogin[1];
+    const order = row(await client.execute({ sql: 'SELECT * FROM orders WHERE id = ?', args: [orderId] }));
+    if (!order) return json(res, 404, { error: 'Order not found' });
+    const body = await readBody(req);
+    let newPassword = String(body.password || '').trim();
+    if (!newPassword) newPassword = randomPassword(8);
+    if (newPassword.length < 6) {
+      return json(res, 400, { error: 'Password must be at least 6 characters' });
+    }
+    const now = new Date().toISOString();
+    let account = null;
+    if (order.applicant_id) {
+      account = row(await client.execute({
+        sql: 'SELECT * FROM applicants WHERE id = ? LIMIT 1',
+        args: [order.applicant_id],
+      }));
+    }
+    if (!account && order.applicant_phone) {
+      account = await findApplicantByPhone(client, order.applicant_phone);
+    }
+    if (account) {
+      await client.execute({
+        sql: `UPDATE applicants SET password_hash=?, password_enc=?, updated_at=? WHERE id=?`,
+        args: [hashPassword(newPassword), encryptCard(newPassword), now, account.id],
+      });
+      if (!order.applicant_id) {
+        await client.execute({
+          sql: 'UPDATE orders SET applicant_id=?, updated_at=? WHERE id=?',
+          args: [account.id, now, orderId],
+        });
+      }
+      return json(res, 200, {
+        success: true,
+        phone: account.phone,
+        password: newPassword,
+        message: 'Login password reset',
+      });
+    }
+    // Create account from order phone if missing
+    const { display, key } = normalizePhone(order.applicant_phone);
+    if (!key || key.length < 8) {
+      return json(res, 400, { error: 'Order has no valid phone to create a login' });
+    }
+    const id = (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString('hex');
+    await client.execute({
+      sql: `INSERT INTO applicants (id, phone, phone_key, password_hash, password_enc, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?)`,
+      args: [id, display || order.applicant_phone, key, hashPassword(newPassword), encryptCard(newPassword), now, now],
+    });
+    await client.execute({
+      sql: 'UPDATE orders SET applicant_id=?, updated_at=? WHERE id=?',
+      args: [id, now, orderId],
+    });
+    return json(res, 200, {
+      success: true,
+      phone: display || order.applicant_phone,
+      password: newPassword,
+      message: 'Login account created and password set',
     });
   }
 

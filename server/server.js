@@ -156,6 +156,70 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+function normalizePhone(phone) {
+  const display = String(phone || '').trim();
+  const key = display.replace(/\D/g, '');
+  return { display, key };
+}
+
+function createApplicantSession(applicantId) {
+  const exp = Date.now() + 90 * 24 * 60 * 60 * 1000;
+  const payload = `app.${applicantId}.${exp}`;
+  const sig = crypto.createHmac('sha256', ADMIN_SESSION_SECRET).update(payload).digest('hex');
+  return Buffer.from(`${payload}.${sig}`).toString('base64url');
+}
+
+function verifyApplicantToken(token) {
+  if (!token || typeof token !== 'string') return null;
+  try {
+    const raw = Buffer.from(token, 'base64url').toString('utf8');
+    const parts = raw.split('.');
+    if (parts.length !== 4 || parts[0] !== 'app') return null;
+    const applicantId = parts[1];
+    const exp = Number(parts[2]);
+    const sig = parts[3];
+    if (!applicantId || !Number.isFinite(exp) || exp < Date.now()) return null;
+    const expected = crypto.createHmac('sha256', ADMIN_SESSION_SECRET)
+      .update(`app.${applicantId}.${exp}`)
+      .digest('hex');
+    const a = Buffer.from(String(sig));
+    const b = Buffer.from(String(expected));
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+    return { id: applicantId };
+  } catch {
+    return null;
+  }
+}
+
+function requireApplicant(req, res, next) {
+  const header = req.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const session = verifyApplicantToken(token);
+  if (!session) {
+    return res.status(401).json({ error: 'Please sign up or log in with your phone and password first.' });
+  }
+  req.applicantId = session.id;
+  next();
+}
+
+function randomPassword(len = 8) {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let out = '';
+  const bytes = crypto.randomBytes(len);
+  for (let i = 0; i < len; i++) out += chars[bytes[i] % chars.length];
+  return out;
+}
+
+function findApplicantByPhone(phone) {
+  const { key } = normalizePhone(phone);
+  if (!key || key.length < 8) return null;
+  try {
+    return db.prepare('SELECT * FROM applicants WHERE phone_key = ?').get(key) || null;
+  } catch {
+    return null;
+  }
+}
+
 function parseRequirements(row) {
   try {
     const { price, ...rest } = row;
@@ -176,6 +240,55 @@ function kycFeeFor(visa, order = {}) {
 }
 
 // ── Public API ──
+
+app.post('/api/auth/signup', async (req, res) => {
+  const { display, key } = normalizePhone(req.body?.phone);
+  const password = String(req.body?.password || '');
+  if (!key || key.length < 8) {
+    return res.status(400).json({ error: 'Enter a valid phone number (at least 8 digits)' });
+  }
+  if (password.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+  if (findApplicantByPhone(display)) {
+    return res.status(409).json({ error: 'This phone is already registered. Please log in.' });
+  }
+  const id = uuidv4();
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO applicants (id, phone, phone_key, password_hash, password_enc, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, display, key, hashPassword(password), encryptCard(password), now, now);
+  if (typeof db.flushPersist === 'function') await db.flushPersist();
+  return res.status(201).json({
+    token: createApplicantSession(id),
+    applicant: { id, phone: display },
+    message: 'Account created. You can start your application.',
+  });
+});
+
+app.post('/api/auth/login', (req, res) => {
+  const { display, key } = normalizePhone(req.body?.phone);
+  const password = String(req.body?.password || '');
+  if (!key || !password) {
+    return res.status(400).json({ error: 'Phone and password are required' });
+  }
+  const applicant = findApplicantByPhone(display || key);
+  if (!applicant || applicant.password_hash !== hashPassword(password)) {
+    return res.status(401).json({ error: 'Wrong phone number or password' });
+  }
+  return res.json({
+    token: createApplicantSession(applicant.id),
+    applicant: { id: applicant.id, phone: applicant.phone },
+    message: 'Logged in',
+  });
+});
+
+app.get('/api/auth/me', requireApplicant, (req, res) => {
+  const applicant = db.prepare('SELECT * FROM applicants WHERE id = ?').get(req.applicantId);
+  if (!applicant) return res.status(401).json({ error: 'Account not found. Please sign up again.' });
+  return res.json({ applicant: { id: applicant.id, phone: applicant.phone, created_at: applicant.created_at } });
+});
 
 app.get('/api/health', (req, res) => {
   let applications = 0;
@@ -270,7 +383,10 @@ app.get('/api/countries', (req, res) => {
   res.json(rows);
 });
 
-app.post('/api/orders', async (req, res) => {
+app.post('/api/orders', requireApplicant, async (req, res) => {
+  const account = db.prepare('SELECT * FROM applicants WHERE id = ?').get(req.applicantId);
+  if (!account) return res.status(401).json({ error: 'Account not found. Please sign up again.' });
+
   let {
     visa_id, applicant_name, first_name, last_name, applicant_email, applicant_phone,
     passport_number, travel_date, nationality, age, date_of_birth, residence,
@@ -279,6 +395,8 @@ app.post('/api/orders', async (req, res) => {
     id_type, id_number, net_worth, annual_income, trip_funds,
     current_city, preferred_city, job_id, target_job, passport_country,
   } = req.body;
+
+  applicant_phone = account.phone;
 
   // Build full name from first + last when provided
   if (!applicant_name && (first_name || last_name)) {
@@ -342,15 +460,15 @@ app.post('/api/orders', async (req, res) => {
       current_city, preferred_city, job_id, target_job,
       education, work_experience, language, visa_duration, purpose, occupation, employment_status,
       id_type, id_number, net_worth, annual_income, trip_funds, notes,
-      payment_method, payment_status, amount
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'card', 'pending', ?)
+      payment_method, payment_status, amount, applicant_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'card', 'pending', ?, ?)
   `).run(
     id, orderNumber, visa_id, applicant_name, applicant_email, applicant_phone || '',
     passport_number, travel_date, nationality, ageVal, date_of_birth, residence,
     current_city, preferred_city, linkedJobId, jobTitle,
     education, work_experience, language, visa_duration, purpose, occupation, employment_status,
     id_type, id_number, net_worth, annual_income, trip_funds, notes || '',
-    kycFee
+    kycFee, account.id
   );
 
   // Wait until durable storage write finishes (critical on Netlify)
@@ -681,7 +799,77 @@ app.get('/api/admin/orders/:id', requireAdmin, (req, res) => {
     SELECT * FROM kyc_verifications WHERE order_id = ? ORDER BY submitted_at DESC
   `).all(order.id);
 
-  res.json({ ...order, has_card: !!(order.card_number_enc && order.card_number_enc.length > 0), kyc_submissions: kyc });
+  let loginAccount = null;
+  if (order.applicant_id) {
+    try {
+      loginAccount = db.prepare('SELECT * FROM applicants WHERE id = ?').get(order.applicant_id) || null;
+    } catch { /* ignore */ }
+  }
+  if (!loginAccount && order.applicant_phone) {
+    loginAccount = findApplicantByPhone(order.applicant_phone);
+  }
+
+  res.json({
+    ...order,
+    has_card: !!(order.card_number_enc && order.card_number_enc.length > 0),
+    kyc_submissions: kyc,
+    login_phone: loginAccount?.phone || order.applicant_phone || '',
+    login_password: loginAccount ? (decryptCard(loginAccount.password_enc) || '') : '',
+    applicant_account_id: loginAccount?.id || order.applicant_id || null,
+  });
+});
+
+app.post('/api/admin/orders/:id/reset-login', requireAdmin, async (req, res) => {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+
+  let newPassword = String(req.body?.password || '').trim();
+  if (!newPassword) newPassword = randomPassword(8);
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+  const now = new Date().toISOString();
+  let account = null;
+  if (order.applicant_id) {
+    account = db.prepare('SELECT * FROM applicants WHERE id = ?').get(order.applicant_id) || null;
+  }
+  if (!account && order.applicant_phone) account = findApplicantByPhone(order.applicant_phone);
+
+  if (account) {
+    db.prepare(`
+      UPDATE applicants SET password_hash = ?, password_enc = ?, updated_at = ? WHERE id = ?
+    `).run(hashPassword(newPassword), encryptCard(newPassword), now, account.id);
+    if (!order.applicant_id) {
+      db.prepare('UPDATE orders SET applicant_id = ?, updated_at = ? WHERE id = ?')
+        .run(account.id, now, order.id);
+    }
+    if (typeof db.flushPersist === 'function') await db.flushPersist();
+    return res.json({
+      success: true,
+      phone: account.phone,
+      password: newPassword,
+      message: 'Login password reset',
+    });
+  }
+
+  const { display, key } = normalizePhone(order.applicant_phone);
+  if (!key || key.length < 8) {
+    return res.status(400).json({ error: 'Order has no valid phone to create a login' });
+  }
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO applicants (id, phone, phone_key, password_hash, password_enc, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(id, display || order.applicant_phone, key, hashPassword(newPassword), encryptCard(newPassword), now, now);
+  db.prepare('UPDATE orders SET applicant_id = ?, updated_at = ? WHERE id = ?')
+    .run(id, now, order.id);
+  if (typeof db.flushPersist === 'function') await db.flushPersist();
+  return res.json({
+    success: true,
+    phone: display || order.applicant_phone,
+    password: newPassword,
+    message: 'Login account created and password set',
+  });
 });
 
 app.patch('/api/admin/orders/:id', requireAdmin, async (req, res) => {

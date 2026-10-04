@@ -25,6 +25,7 @@
           <a href="#" onclick="showView('jobs')" class="nav-link">Jobs</a>
           <a href="#" onclick="showView('visas')" class="nav-link">Visas</a>
           <a href="#" onclick="showView('track')" class="nav-link">Track</a>
+          <a href="#" onclick="showView('account')" class="nav-link" id="nav-account-link">Account</a>
         </div>
       </div>
     </nav>
@@ -51,7 +52,7 @@
           <aside class="hero-pass" aria-label="Travel route">
             <span>Your next boarding pass</span>
             <strong>Europe · Germany · Australia</strong>
-            <small>PK &nbsp; ───────── ✈ ───────── &nbsp; EU</small>
+            <small>IN &nbsp; ───────── ✈ ───────── &nbsp; EU</small>
           </aside>
         </div>
 
@@ -158,11 +159,62 @@
       </section>
 
       <!-- SINGLE PAGE SHORT ASSESSMENT -->
+      <section id="view-account" class="view">
+        <div class="page-header">
+          <h1>Applicant account</h1>
+          <p>Sign up with your phone and password before starting an application. Use the same login next time.</p>
+        </div>
+        <div class="form-container account-auth-box">
+          <div id="account-logged-in" class="account-panel" hidden>
+            <p class="account-status">You are logged in as <strong id="account-phone-display">—</strong></p>
+            <div class="hero-actions" style="justify-content:flex-start;margin-top:1rem;">
+              <button type="button" class="btn btn-primary" onclick="continuePendingApply()">Continue application</button>
+              <button type="button" class="btn btn-outline" onclick="applicantLogout()">Log out</button>
+            </div>
+          </div>
+          <div id="account-auth-forms">
+            <div class="account-tabs">
+              <button type="button" class="btn btn-sm btn-primary" id="tab-signup" onclick="switchAccountTab('signup')">Sign up</button>
+              <button type="button" class="btn btn-sm btn-outline" id="tab-login" onclick="switchAccountTab('login')">Log in</button>
+            </div>
+            <form id="signup-form" class="account-form" onsubmit="applicantSignup(event)">
+              <h3>Create account</h3>
+              <div class="form-group">
+                <label>Phone / WhatsApp *</label>
+                <input type="tel" name="phone" required placeholder="+92 300 1234567" inputmode="tel" autocomplete="tel">
+              </div>
+              <div class="form-group">
+                <label>Password *</label>
+                <input type="password" name="password" required minlength="6" placeholder="At least 6 characters" autocomplete="new-password">
+              </div>
+              <div class="form-group">
+                <label>Confirm password *</label>
+                <input type="password" name="password2" required minlength="6" placeholder="Repeat password" autocomplete="new-password">
+              </div>
+              <button type="submit" class="btn btn-primary btn-full">Sign up &amp; continue</button>
+            </form>
+            <form id="login-form" class="account-form" onsubmit="applicantLogin(event)" hidden>
+              <h3>Log in</h3>
+              <div class="form-group">
+                <label>Phone / WhatsApp *</label>
+                <input type="tel" name="phone" required placeholder="+92 300 1234567" inputmode="tel" autocomplete="tel">
+              </div>
+              <div class="form-group">
+                <label>Password *</label>
+                <input type="password" name="password" required minlength="6" placeholder="Your password" autocomplete="current-password">
+              </div>
+              <button type="submit" class="btn btn-primary btn-full">Log in &amp; continue</button>
+            </form>
+          </div>
+        </div>
+      </section>
+
       <section id="view-apply" class="view">
         <div class="page-header">
           <h1>Apply in minutes</h1>
           <p id="apply-visa-label">Only your name, contact details, passport and travel date are required. You can add the rest later.</p>
         </div>
+        <p id="apply-account-banner" class="account-banner" hidden></p>
 
         <div class="form-container">
           <form id="apply-form" onsubmit="submitApplication(event)">
@@ -180,8 +232,8 @@
               </div>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Phone / WhatsApp *</label>
-                  <input type="tel" name="applicant_phone" required placeholder="+92 300 1234567" inputmode="tel" autocomplete="tel">
+                  <label>Phone / WhatsApp * <span class="optional-label">(from your account)</span></label>
+                  <input type="tel" name="applicant_phone" id="apply-phone" required placeholder="+92 300 1234567" inputmode="tel" autocomplete="tel" readonly>
                 </div>
                 <div class="form-group">
                   <label>Email *</label>
@@ -540,7 +592,7 @@
       <div id="ticket-modal" class="admin-modal" aria-hidden="true" onclick="if(event.target===this)closeTicketModal()">
         <div class="admin-modal-card ticket-card" role="dialog" aria-modal="true">
           <div class="admin-modal-head">
-            <h3>Payment &amp; Processing Ticket</h3>
+            <h3 id="ticket-modal-title">Payment &amp; Processing Ticket</h3>
             <button type="button" class="btn btn-sm btn-outline" onclick="closeTicketModal()">Close</button>
           </div>
           <div class="admin-modal-body">

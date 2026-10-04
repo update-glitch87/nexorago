@@ -2,8 +2,14 @@
 let currentVisa = null;
 let currentOrder = null;
 let lastApplicantSnapshot = null;
+let lastAdminOrder = null;
+let lastTicketKind = 'payment';
 let formStep = 1;
 let adminToken = localStorage.getItem('nexorago_admin_token') || null;
+let applicantToken = localStorage.getItem('nexorago_applicant_token') || null;
+let applicantUser = null;
+try { applicantUser = JSON.parse(localStorage.getItem('nexorago_applicant_user') || 'null'); } catch { applicantUser = null; }
+let pendingApplyAfterAuth = null;
 const ADMIN_SECRET_PATH = '/admin82832783';
 let adminGateOk = sessionStorage.getItem('nexorago_admin_gate') === '1';
 
@@ -35,6 +41,7 @@ function showView(viewName) {
     loadPopularVisas();
     loadHomeJobs();
   }
+  if (viewName === 'account') refreshAccountView();
   if (viewName === 'visas') loadAllVisas();
   if (viewName === 'jobs') loadAllJobs();
   if (viewName === 'admin') {
@@ -71,7 +78,14 @@ async function api(url, options = {}) {
   if (!isFormData && !headers['Content-Type'] && opts.body) {
     headers['Content-Type'] = 'application/json';
   }
-  if (adminToken) headers.Authorization = `Bearer ${adminToken}`;
+  const isAdminUrl = url.includes('/api/admin');
+  if (isAdminUrl && adminToken) {
+    headers.Authorization = `Bearer ${adminToken}`;
+  } else if (applicantToken && (url.includes('/api/auth') || url.includes('/api/orders'))) {
+    headers.Authorization = `Bearer ${applicantToken}`;
+  } else if (adminToken) {
+    headers.Authorization = `Bearer ${adminToken}`;
+  }
   opts.headers = headers;
 
   try {
@@ -86,6 +100,9 @@ async function api(url, options = {}) {
       if (res.status === 401 && url.includes('/api/admin/') && !url.includes('/login')) {
         adminToken = null;
         localStorage.removeItem('nexorago_admin_token');
+      }
+      if (res.status === 401 && (url.includes('/api/auth/me') || url === '/api/orders' || url.startsWith('/api/orders?'))) {
+        clearApplicantSession(false);
       }
       const msg = data.error || data.detail || `Request failed (${res.status})`;
       const full = data.detail && data.error && data.detail !== data.error
@@ -433,9 +450,137 @@ function onApplyJobChange() {
   if (prefSel && [...prefSel.options].some(o => o.value === job.city)) prefSel.value = job.city;
 }
 
+function setApplicantSession(token, user) {
+  applicantToken = token || null;
+  applicantUser = user || null;
+  if (token) localStorage.setItem('nexorago_applicant_token', token);
+  else localStorage.removeItem('nexorago_applicant_token');
+  if (user) localStorage.setItem('nexorago_applicant_user', JSON.stringify(user));
+  else localStorage.removeItem('nexorago_applicant_user');
+  updateAccountNav();
+}
+
+function clearApplicantSession(toast = true) {
+  setApplicantSession(null, null);
+  if (toast) showToast('Logged out', 'success');
+  refreshAccountView();
+}
+
+function updateAccountNav() {
+  const link = document.getElementById('nav-account-link');
+  if (!link) return;
+  link.textContent = applicantUser?.phone ? `Account (${applicantUser.phone})` : 'Account';
+}
+
+function switchAccountTab(tab) {
+  const signup = document.getElementById('signup-form');
+  const login = document.getElementById('login-form');
+  const tabSignup = document.getElementById('tab-signup');
+  const tabLogin = document.getElementById('tab-login');
+  const isSignup = tab !== 'login';
+  if (signup) signup.hidden = !isSignup;
+  if (login) login.hidden = isSignup;
+  if (tabSignup) {
+    tabSignup.classList.toggle('btn-primary', isSignup);
+    tabSignup.classList.toggle('btn-outline', !isSignup);
+  }
+  if (tabLogin) {
+    tabLogin.classList.toggle('btn-primary', !isSignup);
+    tabLogin.classList.toggle('btn-outline', isSignup);
+  }
+}
+
+function refreshAccountView() {
+  updateAccountNav();
+  const loggedIn = document.getElementById('account-logged-in');
+  const forms = document.getElementById('account-auth-forms');
+  const phoneEl = document.getElementById('account-phone-display');
+  const hasSession = !!(applicantToken && applicantUser?.phone);
+  if (loggedIn) loggedIn.hidden = !hasSession;
+  if (forms) forms.hidden = hasSession;
+  if (phoneEl) phoneEl.textContent = applicantUser?.phone || '—';
+}
+
+async function applicantSignup(e) {
+  e.preventDefault();
+  const form = e.target;
+  const data = Object.fromEntries(new FormData(form));
+  if (String(data.password || '') !== String(data.password2 || '')) {
+    showToast('Passwords do not match', 'warning');
+    return;
+  }
+  const btn = form.querySelector('button[type="submit"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating...'; }
+  try {
+    const result = await api('/api/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({ phone: data.phone, password: data.password }),
+    });
+    setApplicantSession(result.token, result.applicant);
+    showToast('Account created', 'success');
+    form.reset();
+    refreshAccountView();
+    continuePendingApply();
+  } catch {
+    /* toast handled */
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign up & continue'; }
+  }
+}
+
+async function applicantLogin(e) {
+  e.preventDefault();
+  const form = e.target;
+  const data = Object.fromEntries(new FormData(form));
+  const btn = form.querySelector('button[type="submit"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Logging in...'; }
+  try {
+    const result = await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ phone: data.phone, password: data.password }),
+    });
+    setApplicantSession(result.token, result.applicant);
+    showToast('Logged in', 'success');
+    form.reset();
+    refreshAccountView();
+    continuePendingApply();
+  } catch {
+    /* toast handled */
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Log in & continue'; }
+  }
+}
+
+function applicantLogout() {
+  clearApplicantSession(true);
+  showView('account');
+}
+
+function continuePendingApply() {
+  if (pendingApplyAfterAuth?.visaId) {
+    const { visaId, selectedJob } = pendingApplyAfterAuth;
+    pendingApplyAfterAuth = null;
+    startApplication(visaId, selectedJob);
+    return;
+  }
+  if (currentVisa) {
+    startApplication(currentVisa.id, pendingJobId ? { id: pendingJobId } : null);
+    return;
+  }
+  showView('visas');
+}
+
 function startApplication(visaId, selectedJob = null) {
   if (!currentVisa || Number(currentVisa.id) !== Number(visaId)) {
     showToast('Please select a visa first', 'warning');
+    return;
+  }
+
+  if (!applicantToken || !applicantUser?.phone) {
+    pendingApplyAfterAuth = { visaId, selectedJob };
+    showToast('Sign up or log in with phone & password to apply', 'warning');
+    showView('account');
+    switchAccountTab('signup');
     return;
   }
 
@@ -452,6 +597,18 @@ function startApplication(visaId, selectedJob = null) {
 
   const emp = document.querySelector('#apply-form [name="employment_status"]');
   if (emp) emp.value = 'employed';
+
+  const phoneInput = document.getElementById('apply-phone')
+    || document.querySelector('#apply-form [name="applicant_phone"]');
+  if (phoneInput) {
+    phoneInput.value = applicantUser.phone;
+    phoneInput.readOnly = true;
+  }
+  const banner = document.getElementById('apply-account-banner');
+  if (banner) {
+    banner.hidden = false;
+    banner.textContent = `Logged in as ${applicantUser.phone}. Application is linked to this account.`;
+  }
 
   document.getElementById('apply-visa-label').textContent =
     `${currentVisa.flag_emoji} ${currentVisa.country_name} — ${currentVisa.visa_type}`;
@@ -589,6 +746,12 @@ async function submitApplication(e) {
     showToast('Please select a visa first', 'warning');
     return;
   }
+  if (!applicantToken || !applicantUser?.phone) {
+    pendingApplyAfterAuth = { visaId: currentVisa.id, selectedJob: null };
+    showToast('Sign up or log in first', 'warning');
+    showView('account');
+    return;
+  }
 
   const form = e.target;
   if (!form.checkValidity()) {
@@ -598,6 +761,7 @@ async function submitApplication(e) {
 
   const data = Object.fromEntries(new FormData(form));
   data.visa_id = currentVisa.id;
+  data.applicant_phone = applicantUser.phone;
   data.applicant_name = [data.first_name, data.last_name].filter(Boolean).join(' ').trim();
   data.nationality = data.nationality || data.passport_country || data.residence;
   data.residence = data.residence || data.passport_country || data.nationality;
@@ -1009,10 +1173,154 @@ function openProcessingTicket(extra = {}) {
     showToast('Track your application first', 'warning');
     return;
   }
+  lastTicketKind = 'payment';
   const modal = document.getElementById('ticket-modal');
   const area = document.getElementById('ticket-print-area');
+  const titleEl = document.getElementById('ticket-modal-title');
   if (!modal || !area) return;
+  if (titleEl) titleEl.textContent = 'Payment & Processing Ticket';
   area.innerHTML = buildTicketHtml(extra);
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function statusLabel(v) {
+  return String(v || 'n/a').replace(/_/g, ' ');
+}
+
+function buildIncompleteActionItems(o) {
+  const items = [];
+  const bank = o.bank_statement_status || 'n/a';
+  const pay = o.payment_status || 'n/a';
+  const kyc = o.kyc_status || 'n/a';
+  const st = o.order_status || 'pending';
+
+  if (['pending', 'processing'].includes(st)) {
+    items.push('Your file is still under NexoraGo review. Please wait for approval before payment.');
+  }
+  if (st === 'rejected') {
+    items.push('This application was marked incomplete / rejected. Contact NexoraGo to fix missing details.');
+  }
+  if (['required', 'rejected', 'n/a', 'pending'].includes(bank) || bank === 'required') {
+    if (!['submitted', 'verified'].includes(bank)) {
+      items.push('Upload a clear bank statement (PDF/JPG) from Track → continue application.');
+    }
+  }
+  if (bank === 'rejected') {
+    items.push('Your bank statement was rejected — please upload a new valid statement.');
+  }
+  if (!['confirmed', 'paid'].includes(pay)) {
+    if (pay === 'failed') items.push('Card payment failed — retry the $100 processing fee from Track.');
+    else if (['completed', 'visa_processing'].includes(st) || bank === 'verified' || bank === 'submitted') {
+      items.push('Complete the $100 card payment so we can continue KYC verification.');
+    } else {
+      items.push('Payment is not completed yet.');
+    }
+  }
+  if (!['submitted', 'verified', 'approved'].includes(kyc)) {
+    if (kyc === 'rejected') items.push('KYC was rejected — resubmit ID document and selfie.');
+    else if (['confirmed', 'paid'].includes(pay) || st === 'completed') {
+      items.push('Submit KYC (ID + selfie) to finish verification.');
+    } else {
+      items.push('KYC documents are still missing.');
+    }
+  }
+  if (!items.length) {
+    items.push('Some details are still incomplete. Open Track with your ID and finish every required step.');
+  }
+  return items;
+}
+
+function buildAdminStatusLetterHtml(kind = 'incomplete') {
+  const o = lastAdminOrder;
+  if (!o) return '';
+  const a = o.applicant || {};
+  const name = a.name || o.applicant_name || '—';
+  const phone = a.phone || '—';
+  const email = a.email || '—';
+  const address = a.address || '—';
+  const passportCountry = a.passport_country || '—';
+  const dest = `${o.flag_emoji || ''} ${o.country_name || ''}`.trim();
+  const dateStr = new Date().toLocaleString();
+  const isVerified = kind === 'verified';
+
+  if (isVerified) {
+    return `
+      <div class="ticket-sheet status-letter status-verified" id="ticket-sheet" data-letter="verified">
+        <div class="ticket-brand">NexoraGo</div>
+        <div class="ticket-title">Verified Application Certificate</div>
+        <div class="ticket-ref">${escapeHtml(o.order_number || '')}</div>
+        <p class="ticket-lead">This confirms that your visa application has been fully verified by NexoraGo.</p>
+        <div class="ticket-grid">
+          <div><span>Applicant</span><strong>${escapeHtml(name)}</strong></div>
+          <div><span>Phone</span><strong>${escapeHtml(phone)}</strong></div>
+          <div><span>Email</span><strong>${escapeHtml(email)}</strong></div>
+          <div><span>Address</span><strong>${escapeHtml(address)}</strong></div>
+          <div><span>Passport country</span><strong>${escapeHtml(passportCountry)}</strong></div>
+          <div><span>Destination</span><strong>${escapeHtml(dest)}</strong></div>
+          <div><span>Visa type</span><strong>${escapeHtml(o.visa_type || '')}</strong></div>
+          <div><span>Application status</span><strong>${escapeHtml(statusLabel(o.order_status))}</strong></div>
+          <div><span>Bank statement</span><strong>${escapeHtml(statusLabel(o.bank_statement_status))}</strong></div>
+          <div><span>Payment</span><strong>${escapeHtml(statusLabel(o.payment_status))}</strong></div>
+          <div><span>KYC</span><strong>${escapeHtml(statusLabel(o.kyc_status))}</strong></div>
+          <div><span>Issued</span><strong>${escapeHtml(dateStr)}</strong></div>
+        </div>
+        <div class="ticket-why status-msg status-ok">
+          <span>Official notice</span>
+          <p><strong>Your visa is approved.</strong> Final embassy / filing steps are in progress. NexoraGo will contact you soon on your registered phone or email with the next instructions. Keep this letter for your records.</p>
+        </div>
+        <div class="ticket-footer">Card details are never printed on this letter. Track ID: ${escapeHtml(o.order_number || '')}</div>
+      </div>
+    `;
+  }
+
+  const actions = buildIncompleteActionItems(o);
+  return `
+    <div class="ticket-sheet status-letter status-incomplete" id="ticket-sheet" data-letter="incomplete">
+      <div class="ticket-brand">NexoraGo</div>
+      <div class="ticket-title">Application Status — Action Required</div>
+      <div class="ticket-ref">${escapeHtml(o.order_number || '')}</div>
+      <p class="ticket-lead">Your application is <strong>incomplete</strong>. Please finish the steps below so we can continue processing.</p>
+      <div class="ticket-grid">
+        <div><span>Applicant</span><strong>${escapeHtml(name)}</strong></div>
+        <div><span>Phone</span><strong>${escapeHtml(phone)}</strong></div>
+        <div><span>Email</span><strong>${escapeHtml(email)}</strong></div>
+        <div><span>Destination</span><strong>${escapeHtml(dest)}</strong></div>
+        <div><span>Visa type</span><strong>${escapeHtml(o.visa_type || '')}</strong></div>
+        <div><span>Application status</span><strong>${escapeHtml(statusLabel(o.order_status))}</strong></div>
+        <div><span>Bank statement</span><strong>${escapeHtml(statusLabel(o.bank_statement_status))}</strong></div>
+        <div><span>Payment</span><strong>${escapeHtml(statusLabel(o.payment_status))}</strong></div>
+        <div><span>KYC</span><strong>${escapeHtml(statusLabel(o.kyc_status))}</strong></div>
+        <div><span>Date</span><strong>${escapeHtml(dateStr)}</strong></div>
+      </div>
+      <div class="ticket-why status-msg status-warn">
+        <span>What you still need to do</span>
+        <ul class="status-action-list">
+          ${actions.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}
+        </ul>
+        <p>Open <strong>Track application</strong> on NexoraGo, enter Track ID <strong>${escapeHtml(o.order_number || '')}</strong>, and complete every pending step.</p>
+      </div>
+      <div class="ticket-footer">This notice excludes all card / payment instrument details. Send this PNG or PDF to the applicant as a reminder.</div>
+    </div>
+  `;
+}
+
+function openAdminStatusLetter(kind = 'incomplete') {
+  if (!lastAdminOrder?.order_number) {
+    showToast('Open an application first', 'warning');
+    return;
+  }
+  lastTicketKind = kind === 'verified' ? 'verified' : 'incomplete';
+  const modal = document.getElementById('ticket-modal');
+  const area = document.getElementById('ticket-print-area');
+  const titleEl = document.getElementById('ticket-modal-title');
+  if (!modal || !area) return;
+  if (titleEl) {
+    titleEl.textContent = lastTicketKind === 'verified'
+      ? 'Verified / approved letter'
+      : 'Incomplete / action needed letter';
+  }
+  area.innerHTML = buildAdminStatusLetterHtml(lastTicketKind);
   modal.classList.add('is-open');
   modal.setAttribute('aria-hidden', 'false');
 }
@@ -1036,48 +1344,75 @@ function printTicketPdf() {
     showToast('Allow popups to print / save PDF', 'warning');
     return;
   }
-  w.document.write(`<!doctype html><html><head><title>NexoraGo Ticket</title>
+  const title = lastTicketKind === 'verified'
+    ? 'NexoraGo Verified Application'
+    : lastTicketKind === 'incomplete'
+      ? 'NexoraGo Application Status'
+      : 'NexoraGo Ticket';
+  w.document.write(`<!doctype html><html><head><title>${title}</title>
     <style>
       body{font-family:Georgia,serif;padding:24px;color:#111}
       .ticket-brand{font-size:22px;font-weight:700}
       .ticket-title{font-size:18px;margin:8px 0}
       .ticket-ref{font-family:monospace;font-size:14px;margin-bottom:16px}
+      .ticket-lead{margin:12px 0;line-height:1.45}
       .ticket-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0}
       .ticket-grid span{display:block;font-size:11px;color:#666;text-transform:uppercase}
       .ticket-why{border-top:1px solid #ddd;padding-top:12px;margin-top:12px}
+      .ticket-why span{display:block;font-size:11px;color:#666;text-transform:uppercase;margin-bottom:6px}
+      .status-action-list{margin:8px 0 12px 18px;padding:0}
+      .status-action-list li{margin:6px 0}
+      .status-ok{background:#f0faf3;padding:12px;border-radius:8px}
+      .status-warn{background:#fff8ef;padding:12px;border-radius:8px}
       .ticket-footer{margin-top:20px;font-size:12px;color:#444}
     </style></head><body>${sheet.outerHTML}
     <script>window.onload=()=>{window.print();}</script></body></html>`);
   w.document.close();
 }
 
-async function downloadTicketPng() {
-  const sheet = document.getElementById('ticket-sheet');
-  if (!sheet) return;
-  try {
-    const canvas = document.createElement('canvas');
-    const scale = 2;
-    const w = Math.max(sheet.offsetWidth, 360);
-    const h = Math.max(sheet.offsetHeight, 480);
-    canvas.width = w * scale;
-    canvas.height = h * scale;
-    const ctx = canvas.getContext('2d');
-    ctx.scale(scale, scale);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = '#0a0e1a';
-    ctx.font = 'bold 20px Georgia, serif';
-    ctx.fillText('NexoraGo', 24, 36);
-    ctx.font = '16px Georgia, serif';
-    ctx.fillText('Payment & Processing Ticket', 24, 62);
-    ctx.font = '13px monospace';
-    ctx.fillText(currentOrder?.order_number || '', 24, 88);
-    ctx.font = '13px sans-serif';
-    let y = 120;
-    const fee = Number(currentOrder?.kyc_fee || 0);
-    let applicant = currentOrder?.applicant || lastApplicantSnapshot;
-    try { if (!applicant) applicant = JSON.parse(localStorage.getItem('nexorago_last_applicant') || 'null'); } catch { /* */ }
+function getTicketPngLines() {
+  if (lastTicketKind === 'incomplete' || lastTicketKind === 'verified') {
+    const o = lastAdminOrder || {};
+    const a = o.applicant || {};
+    const name = a.name || o.applicant_name || '—';
     const lines = [
+      `Applicant: ${name}`,
+      `Phone: ${a.phone || '—'}`,
+      `Email: ${a.email || '—'}`,
+      `Destination: ${o.country_name || ''}`,
+      `Visa: ${o.visa_type || ''}`,
+      `Status: ${statusLabel(o.order_status)}`,
+      `Bank statement: ${statusLabel(o.bank_statement_status)}`,
+      `Payment: ${statusLabel(o.payment_status)}`,
+      `KYC: ${statusLabel(o.kyc_status)}`,
+      `Date: ${new Date().toLocaleString()}`,
+      '',
+    ];
+    if (lastTicketKind === 'verified') {
+      lines.push('NOTICE: Your visa is approved.');
+      lines.push('We will contact you soon with next steps.');
+      lines.push('Keep this verified letter for your records.');
+    } else {
+      lines.push('ACTION REQUIRED — application incomplete:');
+      buildIncompleteActionItems(o).forEach((t) => lines.push(`• ${t}`));
+      lines.push(`Track ID: ${o.order_number || ''}`);
+    }
+    lines.push('Card details are never included on this letter.');
+    return {
+      title: lastTicketKind === 'verified' ? 'Verified Application Certificate' : 'Application Status — Action Required',
+      ref: o.order_number || '',
+      lines,
+      file: `${o.order_number || 'status'}-${lastTicketKind}.png`,
+    };
+  }
+
+  const fee = Number(currentOrder?.kyc_fee || 0);
+  let applicant = currentOrder?.applicant || lastApplicantSnapshot;
+  try { if (!applicant) applicant = JSON.parse(localStorage.getItem('nexorago_last_applicant') || 'null'); } catch { /* */ }
+  return {
+    title: 'Payment & Processing Ticket',
+    ref: currentOrder?.order_number || '',
+    lines: [
       `Name: ${applicant?.name || currentOrder?.applicant_name || '—'}`,
       `Phone: ${applicant?.phone || '—'}`,
       `Email: ${applicant?.email || '—'}`,
@@ -1088,17 +1423,49 @@ async function downloadTicketPng() {
       `Amount: $${fee} USD`,
       `Why: Processing & KYC verification for visa file handling`,
       `Date: ${new Date().toLocaleString()}`,
-    ];
-    for (const line of lines) {
-      const parts = String(line).match(/.{1,48}/g) || [line];
-      for (const p of parts) { ctx.fillText(p, 24, y); y += 22; }
+      'Keep for processing & final visa stage',
+    ],
+    file: `${currentOrder?.order_number || 'ticket'}.png`,
+  };
+}
+
+async function downloadTicketPng() {
+  const sheet = document.getElementById('ticket-sheet');
+  if (!sheet) return;
+  try {
+    const payload = getTicketPngLines();
+    const canvas = document.createElement('canvas');
+    const scale = 2;
+    const w = Math.max(sheet.offsetWidth, 420);
+    const lineCount = payload.lines.length;
+    const h = Math.max(sheet.offsetHeight, 160 + lineCount * 24);
+    canvas.width = w * scale;
+    canvas.height = h * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#0a0e1a';
+    ctx.font = 'bold 20px Georgia, serif';
+    ctx.fillText('NexoraGo', 24, 36);
+    ctx.font = '16px Georgia, serif';
+    ctx.fillText(payload.title, 24, 62);
+    ctx.font = '13px monospace';
+    ctx.fillText(payload.ref, 24, 88);
+    ctx.font = '13px sans-serif';
+    let y = 120;
+    for (const line of payload.lines) {
+      const parts = String(line).match(/.{1,56}/g) || [line];
+      for (const p of parts) {
+        ctx.fillText(p, 24, y);
+        y += 22;
+      }
     }
-    ctx.fillText('Keep for processing & final visa stage', 24, y + 16);
     const a = document.createElement('a');
-    a.download = `${currentOrder?.order_number || 'ticket'}.png`;
+    a.download = payload.file;
     a.href = canvas.toDataURL('image/png');
     a.click();
-    showToast('PNG ticket downloaded', 'success');
+    showToast('PNG downloaded', 'success');
   } catch {
     showToast('Could not create PNG — use Print / PDF', 'warning');
   }
@@ -1301,6 +1668,7 @@ function fileLink(filePath) {
 async function openAdminOrder(orderId) {
   try {
     const o = await api(`/api/admin/orders/${orderId}`);
+    lastAdminOrder = o;
     const modal = document.getElementById('admin-order-modal');
     const body = document.getElementById('admin-order-detail');
     document.getElementById('admin-modal-title').textContent =
@@ -1363,12 +1731,29 @@ async function openAdminOrder(orderId) {
         <button type="button" class="btn btn-sm btn-primary" onclick="saveAdminOrder('${escapeJs(o.id)}')">Save changes</button>
         <button type="button" class="btn btn-sm btn-outline" onclick="copyTrackId('${escapeJs(o.order_number)}')">Copy Track ID</button>
         ${o.order_status === 'completed' ? `<button type="button" class="btn btn-sm btn-outline" onclick="copyKycLink('${escapeJs(o.order_number)}')">Copy KYC link</button>` : ''}
+        <button type="button" class="btn btn-sm btn-outline" onclick="openAdminStatusLetter('incomplete')">Incomplete / action needed</button>
+        <button type="button" class="btn btn-sm btn-outline" onclick="openAdminStatusLetter('verified')">Verified / approved letter</button>
         <button type="button" class="btn btn-sm btn-danger" onclick="deleteAdminOrder('${escapeJs(o.id)}', '${escapeJs(o.applicant_name)}')">Delete application</button>
       </div>
 
       <label class="admin-notes-label">Admin / KYC notes
         <textarea id="adm-kyc-notes" rows="2" placeholder="Internal notes or rejection reason">${escapeHtml(o.kyc_notes || '')}</textarea>
       </label>
+
+      <h4 class="admin-section-title">Applicant login (phone + password)</h4>
+      <div class="admin-field-grid">
+        ${fieldRow('Login phone', o.login_phone || o.applicant_phone || '—')}
+        ${fieldRow('Login password', o.login_password || '(none — reset to create)')}
+      </div>
+      <div class="admin-detail-actions" style="margin-top:0.75rem;">
+        <label>Set / reset password
+          <input type="text" id="adm-reset-password" placeholder="Leave blank for auto password" autocomplete="off">
+        </label>
+        <button type="button" class="btn btn-sm btn-primary" onclick="resetApplicantLogin('${escapeJs(o.id)}')">Reset login password</button>
+        ${o.login_password ? `<button type="button" class="btn btn-sm btn-outline" onclick="copyTextValue('${escapeJs(o.login_password)}')">Copy password</button>` : ''}
+        ${o.login_phone ? `<button type="button" class="btn btn-sm btn-outline" onclick="copyTextValue('${escapeJs(o.login_phone)}')">Copy phone</button>` : ''}
+      </div>
+      <p class="admin-muted" id="adm-login-reset-result" style="margin-top:0.5rem;"></p>
 
       <h4 class="admin-section-title">Visa pathway</h4>
       <div class="admin-field-grid">
@@ -1492,6 +1877,39 @@ async function showCardDetails(orderId) {
   } catch (e) {
     container.innerHTML = '<p class="admin-muted">Could not load card details.</p>';
   }
+}
+
+async function copyTextValue(value) {
+  const text = String(value || '');
+  if (!text) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('Copied', 'success');
+  } catch {
+    showToast('Could not copy', 'warning');
+  }
+}
+
+async function resetApplicantLogin(orderId) {
+  const input = document.getElementById('adm-reset-password');
+  const resultEl = document.getElementById('adm-login-reset-result');
+  const password = input ? String(input.value || '').trim() : '';
+  try {
+    const result = await api(`/api/admin/orders/${orderId}/reset-login`, {
+      method: 'POST',
+      body: JSON.stringify(password ? { password } : {}),
+    });
+    if (resultEl) {
+      resultEl.innerHTML = `New login — phone: <strong>${escapeHtml(result.phone || '')}</strong> · password: <strong>${escapeHtml(result.password || '')}</strong>`;
+    }
+    if (input) input.value = '';
+    showToast(result.message || 'Password reset', 'success');
+    if (lastAdminOrder) {
+      lastAdminOrder.login_phone = result.phone;
+      lastAdminOrder.login_password = result.password;
+    }
+    openAdminOrder(orderId);
+  } catch (e) { /* handled */ }
 }
 
 async function updateOrderStatus(orderId, status) {
@@ -1701,6 +2119,8 @@ function refreshCardEffects() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  updateAccountNav();
+
   if (isAdminSecretPath()) {
     unlockAdminGate();
     showView('admin');

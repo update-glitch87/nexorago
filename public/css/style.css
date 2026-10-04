@@ -1530,6 +1530,16 @@ a:hover { text-decoration: none; }
   box-shadow: 0 0 20px var(--accent-glow);
 }
 
+.timeline-step.failed .timeline-dot {
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  border-color: transparent;
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.35);
+}
+
+.timeline-step.failed .timeline-label {
+  color: #ef4444;
+}
+
 .timeline-label {
   font-size: 0.75rem;
   font-weight: 600;

@@ -703,14 +703,21 @@ async function handle(req, res) {
       if (!order) return json(res, 404, { error: 'Order not found' });
       const status = body.order_status || body.status;
       const kycStatus = body.kyc_status;
+      const paymentStatus = body.payment_status;
       const notes = body.notes ?? body.kyc_notes;
       const sets = ["updated_at=datetime('now')"];
       const args = [];
       if (status) { sets.push('order_status=?'); args.push(status); }
       if (kycStatus) { sets.push('kyc_status=?'); args.push(kycStatus); }
+      if (paymentStatus) { sets.push('payment_status=?'); args.push(paymentStatus); }
       if (notes != null) { sets.push('kyc_notes=?'); args.push(notes); }
       if ((status === 'approved' || status === 'completed') && !kycStatus
           && (order.kyc_status === 'n/a' || !order.kyc_status)) {
+        sets.push('kyc_status=?');
+        args.push('required');
+      }
+      // If payment failed, send user back to payment step (not KYC)
+      if (paymentStatus === 'failed' && !kycStatus) {
         sets.push('kyc_status=?');
         args.push('required');
       }

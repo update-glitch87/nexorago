@@ -688,6 +688,11 @@ app.patch('/api/admin/orders/:id', requireAdmin, async (req, res) => {
     updates.push('kyc_status = ?');
     params.push('required');
   }
+  // Failed payment sends user back to payment step
+  if (payment_status === 'failed' && !kyc_status) {
+    updates.push('kyc_status = ?');
+    params.push('required');
+  }
   if (kyc_status && kyc_status !== 'pending' && kyc_status !== 'n/a' && kyc_status !== 'submitted' && kyc_status !== 'required') {
     updates.push("kyc_reviewed_at = datetime('now')");
   }

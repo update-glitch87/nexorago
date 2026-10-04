@@ -779,12 +779,14 @@ function displayTrackResult(order) {
         <button type="button" class="btn btn-sm btn-outline" onclick="copyTrackingId('${escapeJs(order.order_number)}')">Copy</button>
       </p>
       <div class="status-timeline steps-6">
-        ${steps.map((s, i) => `
-          <div class="timeline-step ${i < stepIndex ? 'completed' : ''} ${i === Math.min(stepIndex, steps.length - 1) ? 'active' : ''}">
+        ${steps.map((s, i) => {
+          const isFailedStep = order.payment_status === 'failed' && i === 2;
+          return `
+          <div class="timeline-step ${i < stepIndex ? 'completed' : ''} ${i === Math.min(stepIndex, steps.length - 1) ? 'active' : ''} ${isFailedStep ? 'failed' : ''}">
             <div class="timeline-dot">${i + 1}</div>
             <div class="timeline-label">${s.label}</div>
           </div>
-        `).join('')}
+        `;}).join('')}
       </div>
       <div class="summary-row"><span>Applicant</span><span>${escapeHtml(order.applicant_name || '—')}</span></div>
       <div class="summary-row"><span>Submitted</span><span>${order.created_at ? new Date(order.created_at).toLocaleDateString() : '—'}</span></div>

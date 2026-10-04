@@ -745,11 +745,12 @@ function displayTrackResult(order) {
         <p>Status: <strong>Under review</strong>. When NexoraGo approves, <strong>Payment</strong> unlocks here.</p>
       </div>`;
   } else if (!paid) {
+    const isFailed = order.payment_status === 'failed';
     actionHtml = `
-      <div class="track-action success-panel">
-        <p><strong>Approved for payment</strong></p>
-        <p>Pay <strong>$${Number(order.kyc_fee || 1)}</strong> processing / KYC fee, then upload documents.</p>
-        <button class="btn btn-primary btn-full" onclick="goToKycPayment()">Pay $${Number(order.kyc_fee || 1)} &amp; continue →</button>
+      <div class="track-action ${isFailed ? 'error-panel' : 'success-panel'}">
+        <p><strong>${isFailed ? 'Payment failed' : 'Approved for payment'}</strong></p>
+        <p>${isFailed ? 'Your last payment attempt failed. You can retry with the same or a different card.' : `Pay <strong>$${Number(order.kyc_fee || 1)}</strong> processing / KYC fee, then upload documents.`}</p>
+        <button class="btn btn-primary btn-full" onclick="goToKycPayment()">${isFailed ? 'Retry payment' : `Pay $${Number(order.kyc_fee || 1)} &amp; continue →`}</button>
       </div>`;
   } else if (!kycDone) {
     actionHtml = `

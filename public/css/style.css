@@ -1395,6 +1395,12 @@ a:hover { text-decoration: none; }
   color: var(--text-primary);
 }
 
+.track-action.error-panel {
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: var(--text-primary);
+}
+
 .ticket-card { max-width: 640px; }
 
 .ticket-print-area {

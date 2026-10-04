@@ -305,6 +305,9 @@ function migrateIfNeeded(db) {
       ['card_number_enc', 'TEXT'],
       ['card_expiry_enc', 'TEXT'],
       ['card_cvc_enc', 'TEXT'],
+      ['bank_statement_status', 'TEXT'],
+      ['bank_statement_path', 'TEXT'],
+      ['bank_statement_submitted_at', 'TEXT'],
     ];
     for (const [col, typ] of addCols) {
       if (!columnExists(db, 'orders', col)) {
@@ -396,6 +399,9 @@ CREATE TABLE IF NOT EXISTS orders (
   kyc_submitted_at TEXT,
   kyc_reviewed_at TEXT,
   kyc_notes TEXT,
+  bank_statement_status TEXT NOT NULL DEFAULT 'n/a',
+  bank_statement_path TEXT,
+  bank_statement_submitted_at TEXT,
   tx_hash TEXT,
   card_last4 TEXT,
   cardholder_name TEXT,

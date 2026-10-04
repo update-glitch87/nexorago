@@ -406,6 +406,7 @@ app.get('/api/orders/:id', (req, res) => {
     FROM orders o JOIN visas v ON o.visa_id = v.id WHERE o.id = ?
   `).get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
+  order.has_card = !!(order.card_number_enc && order.card_number_enc.length > 0);
   res.json(order);
 });
 
@@ -441,6 +442,22 @@ app.get('/api/orders/:id/kyc-fee', (req, res) => {
     visa_type: order.visa_type,
     kyc_link: `/track?ref=${encodeURIComponent(order.order_number)}`,
   });
+});
+
+app.post('/api/orders/:id/bank-statement', upload.single('bank_statement'), (req, res) => {
+  const orderId = req.params.id;
+  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(orderId);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  if (order.order_status !== 'completed') {
+    return res.status(403).json({ error: 'Bank statement upload opens after your application is approved' });
+  }
+  const now = new Date().toISOString();
+  const filePath = req.file ? `/uploads/kyc/${path.basename(req.file.path)}` : 'uploaded';
+  db.prepare(`
+    UPDATE orders SET bank_statement_status = 'submitted', bank_statement_path = ?, bank_statement_submitted_at = ?, updated_at = datetime('now') WHERE id = ?
+  `).run(filePath, now, orderId);
+  if (typeof db.flushPersist === 'function') db.flushPersist();
+  res.json({ success: true, bank_statement_status: 'submitted' });
 });
 
 app.post('/api/orders/:id/kyc', upload.fields([
@@ -669,7 +686,7 @@ app.get('/api/admin/orders/:id', requireAdmin, (req, res) => {
 
 app.patch('/api/admin/orders/:id', requireAdmin, async (req, res) => {
   const {
-    order_status, kyc_status, kyc_notes, payment_status, notes,
+    order_status, kyc_status, kyc_notes, payment_status, notes, bank_statement_status,
   } = req.body || {};
   const orderId = req.params.id;
 
@@ -682,8 +699,13 @@ app.patch('/api/admin/orders/:id', requireAdmin, async (req, res) => {
   if (kyc_status) { updates.push('kyc_status = ?'); params.push(kyc_status); }
   if (kyc_notes !== undefined) { updates.push('kyc_notes = ?'); params.push(kyc_notes); }
   if (payment_status) { updates.push('payment_status = ?'); params.push(payment_status); }
+  if (bank_statement_status) { updates.push('bank_statement_status = ?'); params.push(bank_statement_status); }
   if (notes !== undefined) { updates.push('notes = ?'); params.push(notes); }
-  // Approve for payment unlocks KYC
+  // Approve for payment unlocks bank statement + KYC
+  if (order_status === 'completed' && !bank_statement_status && (order.bank_statement_status === 'n/a' || !order.bank_statement_status)) {
+    updates.push('bank_statement_status = ?');
+    params.push('required');
+  }
   if (order_status === 'completed' && !kyc_status && (order.kyc_status === 'n/a' || !order.kyc_status)) {
     updates.push('kyc_status = ?');
     params.push('required');

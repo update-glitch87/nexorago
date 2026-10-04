@@ -369,6 +369,32 @@
         </div>
       </section>
 
+      <!-- BANK STATEMENT UPLOAD -->
+      <section id="view-bank-statement" class="view">
+        <div class="page-header">
+          <h1>Bank Statement</h1>
+          <p>Upload your latest bank statement to unlock payment</p>
+        </div>
+        <div class="form-container">
+          <button type="button" class="btn btn-back" onclick="showView('track')">← Back to Track</button>
+          <form id="bank-statement-form" onsubmit="submitBankStatement(event)">
+            <div class="form-section">
+              <h3>Financial Proof</h3>
+              <div class="form-group">
+                <label>Bank Statement (PDF, JPG, PNG) *</label>
+                <div class="file-upload">
+                  <input type="file" name="bank_statement" accept=".pdf,.jpg,.jpeg,.png" required onchange="previewFile(this, 'bank-statement-preview')">
+                  <div class="file-upload-label"><span class="upload-icon">🏦</span><span>Upload bank statement</span></div>
+                  <div class="file-preview" id="bank-statement-preview"></div>
+                </div>
+              </div>
+              <p class="form-hint">Latest 3 months statement preferred. File will be reviewed before the $100 payment step unlocks.</p>
+            </div>
+            <button type="submit" class="btn btn-primary btn-lg btn-full">Submit Bank Statement</button>
+          </form>
+        </div>
+      </section>
+
       <!-- KYC FEE PAYMENT -->
       <section id="view-payment" class="view">
         <div class="page-header">

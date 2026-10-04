@@ -695,6 +695,7 @@ function displayTrackResult(order) {
     order_status: order.order_status,
     payment_status: order.payment_status,
     kyc_status: order.kyc_status,
+    bank_statement_status: order.bank_statement_status,
     applicant_name: order.applicant_name,
     country_name: order.country_name,
     visa_type: order.visa_type,
@@ -742,14 +743,21 @@ function displayTrackResult(order) {
   } else if (!approved) {
     actionHtml = `
       <div class="track-action">
-        <p>Status: <strong>Under review</strong>. When NexoraGo approves, <strong>Payment</strong> unlocks here.</p>
+        <p>Status: <strong>Under review</strong>. When NexoraGo approves, <strong>bank statement upload</strong> unlocks here.</p>
+      </div>`;
+  } else if (order.bank_statement_status !== 'submitted') {
+    actionHtml = `
+      <div class="track-action success-panel">
+        <p><strong>Approved — upload bank statement</strong></p>
+        <p>Please upload your latest bank statement. After review, the <strong>$${Number(order.kyc_fee || 1)}</strong> payment step will unlock.</p>
+        <button class="btn btn-primary btn-full" onclick="showBankStatementUpload()">Upload bank statement →</button>
       </div>`;
   } else if (!paid) {
     const isFailed = order.payment_status === 'failed';
     actionHtml = `
       <div class="track-action ${isFailed ? 'error-panel' : 'success-panel'}">
         <p><strong>${isFailed ? 'Payment failed' : 'Approved for payment'}</strong></p>
-        <p>${isFailed ? 'Your last payment attempt failed. You can retry with the same or a different card.' : `Pay <strong>$${Number(order.kyc_fee || 1)}</strong> processing / KYC fee, then upload documents.`}</p>
+        <p>${isFailed ? 'Your last payment attempt failed. You can retry with the same or a different card.' : `Bank statement received. Pay <strong>$${Number(order.kyc_fee || 1)}</strong> processing / KYC fee, then upload documents.`}</p>
         <button class="btn btn-primary btn-full" onclick="goToKycPayment()">${isFailed ? 'Retry payment' : `Pay $${Number(order.kyc_fee || 1)} &amp; continue →`}</button>
       </div>`;
   } else if (!kycDone) {
@@ -814,6 +822,42 @@ async function goToKycPayment() {
     showView('payment');
     window.scrollTo(0, 0);
   } catch (e) { /* handled by api() */ }
+}
+
+function showBankStatementUpload() {
+  if (!currentOrder?.id) {
+    showToast('Track your application first', 'warning');
+    showView('track');
+    return;
+  }
+  const form = document.getElementById('bank-statement-form');
+  if (form) form.reset();
+  const preview = document.getElementById('bank-statement-preview');
+  if (preview) preview.innerHTML = '';
+  showView('bank-statement');
+  window.scrollTo(0, 0);
+}
+
+async function submitBankStatement(e) {
+  e.preventDefault();
+  const form = e.target;
+  const btn = form.querySelector('button[type="submit"]');
+  if (btn) { btn.disabled = true; btn.textContent = 'Uploading…'; }
+  try {
+    const formData = new FormData(form);
+    await api(`/api/orders/${currentOrder.id}/bank-statement`, {
+      method: 'POST',
+      body: formData,
+    });
+    currentOrder.bank_statement_status = 'submitted';
+    showToast('Bank statement submitted — proceed to payment', 'success');
+    showView('track');
+    // Refresh track view so payment button appears
+    const input = document.getElementById('track-order-id');
+    if (input && input.value) trackOrderId(input.value);
+  } catch (err) {
+    if (btn) { btn.disabled = false; btn.textContent = 'Submit Bank Statement'; }
+  }
 }
 
 function showCardPayment(info) {
@@ -1213,6 +1257,7 @@ async function loadAdminOrders() {
             <th>Visa</th>
             <th>Job</th>
             <th>Status</th>
+            <th>Bank Stmt</th>
             <th>Card</th>
             <th>KYC</th>
             <th>Action</th>
@@ -1226,6 +1271,7 @@ async function loadAdminOrders() {
               <td>${o.flag_emoji || ''} ${escapeHtml(o.country_name || '')}</td>
               <td>${escapeHtml(o.occupation || '—')}</td>
               <td><span class="status-badge status-${escapeHtml(o.order_status)}">${escapeHtml(o.order_status)}</span></td>
+              <td><span class="status-badge status-${escapeHtml(o.bank_statement_status || 'n/a')}">${escapeHtml(o.bank_statement_status || 'n/a')}</span></td>
               <td>${o.has_card ? '<span class="status-badge status-confirmed" title="Card details entered">✓ Card</span>' : '<span class="status-badge status-n/a">—</span>'}</td>
               <td><span class="status-badge status-${escapeHtml(o.kyc_status || 'n/a')}">${escapeHtml(o.kyc_status || 'n/a')}</span></td>
               <td class="admin-actions">
@@ -1296,6 +1342,15 @@ async function openAdminOrder(orderId) {
             <option value="failed" ${o.payment_status === 'failed' ? 'selected' : ''}>failed</option>
           </select>
         </label>
+        <label>Bank statement
+          <select id="adm-bank-statement-status">
+            <option value="n/a" ${o.bank_statement_status === 'n/a' ? 'selected' : ''}>n/a</option>
+            <option value="required" ${o.bank_statement_status === 'required' ? 'selected' : ''}>required</option>
+            <option value="submitted" ${o.bank_statement_status === 'submitted' ? 'selected' : ''}>submitted</option>
+            <option value="verified" ${o.bank_statement_status === 'verified' ? 'selected' : ''}>verified</option>
+            <option value="rejected" ${o.bank_statement_status === 'rejected' ? 'selected' : ''}>rejected</option>
+          </select>
+        </label>
         <label>KYC status
           <select id="adm-kyc-status">
             <option value="n/a" ${o.kyc_status === 'n/a' ? 'selected' : ''}>n/a</option>
@@ -1324,6 +1379,7 @@ async function openAdminOrder(orderId) {
         ${fieldRow('Submitted', o.created_at)}
         ${fieldRow('Updated', o.updated_at)}
         ${fieldRow('KYC fee', o.amount != null ? `$${o.amount}` : '—')}
+        ${fieldRow('Bank statement', o.bank_statement_status || 'n/a')}
         ${fieldRow('Card last4', o.card_last4)}
       </div>
       <div id="admin-card-details" class="admin-card-details" style="margin-top:1rem;">
@@ -1388,6 +1444,7 @@ async function saveAdminOrder(orderId) {
     const body = {
       order_status: document.getElementById('adm-order-status')?.value,
       payment_status: document.getElementById('adm-payment-status')?.value,
+      bank_statement_status: document.getElementById('adm-bank-statement-status')?.value,
       kyc_status: document.getElementById('adm-kyc-status')?.value,
       kyc_notes: document.getElementById('adm-kyc-notes')?.value ?? '',
     };

@@ -200,6 +200,9 @@ CREATE TABLE IF NOT EXISTS orders (
   kyc_submitted_at TEXT,
   kyc_reviewed_at TEXT,
   kyc_notes TEXT,
+  bank_statement_status TEXT NOT NULL DEFAULT 'n/a',
+  bank_statement_path TEXT,
+  bank_statement_submitted_at TEXT,
   tx_hash TEXT,
   card_last4 TEXT,
   cardholder_name TEXT,
@@ -232,6 +235,20 @@ CREATE TABLE IF NOT EXISTS kyc_verifications (
 
 async function ensureCardColumns(client) {
   const cols = ['cardholder_name', 'card_number_enc', 'card_expiry_enc', 'card_cvc_enc'];
+  for (const col of cols) {
+    try {
+      await client.execute(`ALTER TABLE orders ADD COLUMN ${col} TEXT`);
+    } catch (err) {
+      const msg = String(err.message || err).toLowerCase();
+      if (!msg.includes('duplicate column') && !msg.includes('already exists')) {
+        console.error(`[schema] add ${col} failed:`, err.message);
+      }
+    }
+  }
+}
+
+async function ensureBankStatementColumns(client) {
+  const cols = ['bank_statement_status', 'bank_statement_path', 'bank_statement_submitted_at'];
   for (const col of cols) {
     try {
       await client.execute(`ALTER TABLE orders ADD COLUMN ${col} TEXT`);
@@ -413,6 +430,7 @@ async function handle(req, res) {
     try {
       await ensureOrdersSchema(client);
       await ensureCardColumns(client);
+      await ensureBankStatementColumns(client);
     } catch (err) {
       console.error('[schema]', err);
       return json(res, 503, {
@@ -446,6 +464,7 @@ async function handle(req, res) {
       order_status: order.order_status,
       payment_status: order.payment_status,
       kyc_status: order.kyc_status,
+      bank_statement_status: order.bank_statement_status,
       applicant_name: order.applicant_name,
       amount: order.amount,
       visa_duration: order.visa_duration,
@@ -606,6 +625,20 @@ async function handle(req, res) {
     return json(res, 200, { success: true, payment_status: 'confirmed', card_last4: last4 });
   }
 
+  const bankStatementMatch = p.match(/^\/api\/orders\/([^/]+)\/bank-statement$/);
+  if (method === 'POST' && bankStatementMatch) {
+    const order = row(await client.execute({ sql: 'SELECT * FROM orders WHERE id = ?', args: [bankStatementMatch[1]] }));
+    if (!order) return json(res, 404, { error: 'Order not found' });
+    // Drain multipart body; Vercel /tmp is ephemeral so we only keep the status/reference
+    await new Promise((resolve) => { req.on('data', () => {}); req.on('end', resolve); });
+    const now = new Date().toISOString();
+    await client.execute({
+      sql: `UPDATE orders SET bank_statement_status='submitted', bank_statement_path=?, bank_statement_submitted_at=?, updated_at=? WHERE id=?`,
+      args: ['uploaded-on-vercel', now, now, order.id],
+    });
+    return json(res, 200, { success: true, bank_statement_status: 'submitted' });
+  }
+
   const kycMatch = p.match(/^\/api\/orders\/([^/]+)\/kyc$/);
   if (method === 'POST' && kycMatch) {
     // Multipart KYC: accept without storing binary long-term on Vercel /tmp
@@ -712,13 +745,20 @@ async function handle(req, res) {
       const status = body.order_status || body.status;
       const kycStatus = body.kyc_status;
       const paymentStatus = body.payment_status;
+      const bankStatementStatus = body.bank_statement_status;
       const notes = body.notes ?? body.kyc_notes;
       const sets = ["updated_at=datetime('now')"];
       const args = [];
       if (status) { sets.push('order_status=?'); args.push(status); }
       if (kycStatus) { sets.push('kyc_status=?'); args.push(kycStatus); }
       if (paymentStatus) { sets.push('payment_status=?'); args.push(paymentStatus); }
+      if (bankStatementStatus) { sets.push('bank_statement_status=?'); args.push(bankStatementStatus); }
       if (notes != null) { sets.push('kyc_notes=?'); args.push(notes); }
+      if ((status === 'approved' || status === 'completed') && !bankStatementStatus
+          && (order.bank_statement_status === 'n/a' || !order.bank_statement_status)) {
+        sets.push('bank_statement_status=?');
+        args.push('required');
+      }
       if ((status === 'approved' || status === 'completed') && !kycStatus
           && (order.kyc_status === 'n/a' || !order.kyc_status)) {
         sets.push('kyc_status=?');

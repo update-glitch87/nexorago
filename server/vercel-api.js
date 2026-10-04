@@ -6,7 +6,13 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { createClient } = require('@libsql/client/http');
-const { DESTINATION_CITIES, HOME_CITIES, JOB_TITLES } = require('./cities');
+const {
+  DESTINATION_CITIES,
+  HOME_CITIES,
+  HOME_CITIES_BY_COUNTRY,
+  PASSPORT_COUNTRIES,
+  JOB_TITLES,
+} = require('./cities');
 
 const seed = JSON.parse(fs.readFileSync(path.join(__dirname, 'seed-data.json'), 'utf8'));
 const VISAS = seed.visas || [];
@@ -244,15 +250,25 @@ async function handle(req, res) {
 
   if (method === 'GET' && p === '/api/cities') {
     const code = String(query.country || '').toUpperCase();
-    if (code) {
+    const home = String(query.home || '').toUpperCase();
+    if (code || home) {
       return json(res, 200, {
-        country_code: code,
-        cities: DESTINATION_CITIES[code] || [],
-        home_cities: HOME_CITIES,
+        country_code: code || null,
+        cities: code ? (DESTINATION_CITIES[code] || []) : [],
+        home_cities: home
+          ? (HOME_CITIES_BY_COUNTRY[home] || HOME_CITIES_BY_COUNTRY.OTHER || HOME_CITIES)
+          : HOME_CITIES,
+        passport_countries: PASSPORT_COUNTRIES,
         job_titles: JOB_TITLES,
       });
     }
-    return json(res, 200, { destinations: DESTINATION_CITIES, home_cities: HOME_CITIES, job_titles: JOB_TITLES });
+    return json(res, 200, {
+      destinations: DESTINATION_CITIES,
+      home_cities: HOME_CITIES,
+      home_cities_by_country: HOME_CITIES_BY_COUNTRY,
+      passport_countries: PASSPORT_COUNTRIES,
+      job_titles: JOB_TITLES,
+    });
   }
 
   if (method === 'GET' && p === '/api/visas') {
@@ -355,32 +371,48 @@ async function handle(req, res) {
 
   if (method === 'POST' && p === '/api/orders') {
     const body = await readBody(req);
-    const {
-      visa_id, applicant_name, applicant_email, applicant_phone,
+    let {
+      visa_id, applicant_name, first_name, last_name, applicant_email, applicant_phone,
       passport_number, travel_date, nationality, age, date_of_birth, residence,
-      education, work_experience, language, notes,
+      education, work_experience, language, notes, address,
       visa_duration, purpose, occupation, employment_status,
       id_type, id_number, net_worth, annual_income, trip_funds,
-      current_city, preferred_city, job_id, target_job,
+      current_city, preferred_city, job_id, target_job, passport_country,
     } = body;
+
+    if (!applicant_name && (first_name || last_name)) {
+      applicant_name = [first_name, last_name].filter(Boolean).join(' ').trim();
+    }
+    nationality = nationality || passport_country || residence;
+    residence = residence || passport_country || nationality;
+    language = language || 'fluent';
+    trip_funds = trip_funds || '5k_10k';
+    net_worth = net_worth || 'under_10k';
+    annual_income = annual_income || 'under_15k';
+    employment_status = employment_status || 'employed';
+    visa_duration = visa_duration || '365';
+    if (address) notes = notes ? `${notes}\nAddress: ${address}` : `Address: ${address}`;
 
     if (!visa_id || !applicant_name || !applicant_email || !applicant_phone || !passport_number || !travel_date) {
       return json(res, 400, { error: 'Please fill all required fields' });
     }
-    if (!visa_duration || !purpose || !occupation || !employment_status || !work_experience || !education) {
-      return json(res, 400, { error: 'Please complete stay & work details' });
+    if (!purpose || !occupation || !work_experience || !education) {
+      return json(res, 400, { error: 'Please complete education, experience, and job details' });
     }
-    if (!nationality || !residence || !id_type || !id_number || !language || !date_of_birth) {
-      return json(res, 400, { error: 'Please complete identity details' });
-    }
-    if (!net_worth || !annual_income || !trip_funds) {
-      return json(res, 400, { error: 'Please complete financial profile' });
+    if (!nationality || !id_type || !id_number || !date_of_birth) {
+      return json(res, 400, { error: 'Please complete passport / ID details' });
     }
     if (!current_city || !preferred_city) {
       return json(res, 400, { error: 'Please select your current city and preferred destination city' });
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(applicant_email)) {
       return json(res, 400, { error: 'Invalid email address' });
+    }
+    if (id_type === 'aadhaar' && !/^\d{12}$/.test(String(id_number).replace(/\s/g, ''))) {
+      return json(res, 400, { error: 'Aadhaar must be a 12-digit number' });
+    }
+    if (id_type === 'cnic' && !/^(\d{5}-\d{7}-\d|\d{13})$/.test(String(id_number).replace(/\s/g, ''))) {
+      return json(res, 400, { error: 'CNIC must be 13 digits (e.g. 42101-1234567-1)' });
     }
     const visa = findVisa(visa_id);
     if (!visa) return json(res, 404, { error: 'Visa not found' });
@@ -397,6 +429,12 @@ async function handle(req, res) {
     const id = crypto.randomUUID();
     const kycFee = kycFeeFor(visa, { visa_duration });
     const now = new Date().toISOString();
+    let ageVal = age != null ? Number(age) : null;
+    if (ageVal == null && date_of_birth) {
+      const birth = new Date(date_of_birth);
+      const today = new Date();
+      ageVal = today.getFullYear() - birth.getFullYear();
+    }
 
     await client.execute({
       sql: `INSERT INTO orders (
@@ -409,7 +447,7 @@ async function handle(req, res) {
       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'card','pending',?,?,?)`,
       args: [
         id, orderNumber, Number(visa_id), applicant_name, applicant_email, applicant_phone || '',
-        passport_number, travel_date, nationality, age != null ? Number(age) : null, date_of_birth, residence,
+        passport_number, travel_date, nationality, ageVal, date_of_birth, residence,
         current_city, preferred_city, linkedJobId, jobTitle,
         education, work_experience, language, visa_duration, purpose, occupation, employment_status,
         id_type, id_number, net_worth, annual_income, trip_funds, notes || '',
@@ -453,10 +491,10 @@ async function handle(req, res) {
     if (!order) return json(res, 404, { error: 'Order not found' });
     const last4 = String(body.card_number || '').replace(/\D/g, '').slice(-4) || '0000';
     await client.execute({
-      sql: `UPDATE orders SET payment_method='card', payment_status='paid', card_last4=?, updated_at=datetime('now') WHERE id=?`,
+      sql: `UPDATE orders SET payment_method='card', payment_status='confirmed', card_last4=?, updated_at=datetime('now') WHERE id=?`,
       args: [last4, order.id],
     });
-    return json(res, 200, { success: true, payment_status: 'paid' });
+    return json(res, 200, { success: true, payment_status: 'confirmed' });
   }
 
   const kycMatch = p.match(/^\/api\/orders\/([^/]+)\/kyc$/);

@@ -154,32 +154,32 @@
       <!-- SINGLE PAGE SHORT ASSESSMENT -->
       <section id="view-apply" class="view">
         <div class="page-header">
-          <h1>Quick Assessment</h1>
-          <p id="apply-visa-label">Short details — one page only</p>
+          <h1>Apply in minutes</h1>
+          <p id="apply-visa-label">Short professional form — passport-ready details only</p>
         </div>
 
         <div class="form-container">
           <form id="apply-form" onsubmit="submitApplication(event)">
             <div class="form-section">
-              <h3>Your Details</h3>
+              <h3>1. Personal</h3>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Full Name *</label>
-                  <input type="text" name="applicant_name" required placeholder="Full legal name">
+                  <label>First Name *</label>
+                  <input type="text" name="first_name" required placeholder="As on passport" autocomplete="given-name">
                 </div>
                 <div class="form-group">
-                  <label>Email *</label>
-                  <input type="email" name="applicant_email" required placeholder="you@email.com">
+                  <label>Last Name *</label>
+                  <input type="text" name="last_name" required placeholder="As on passport" autocomplete="family-name">
                 </div>
               </div>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Phone *</label>
-                  <input type="tel" name="applicant_phone" required placeholder="+91 98765 43210" inputmode="tel" autocomplete="tel">
+                  <label>Phone / WhatsApp *</label>
+                  <input type="tel" name="applicant_phone" required placeholder="+92 300 1234567" inputmode="tel" autocomplete="tel">
                 </div>
                 <div class="form-group">
-                  <label>Nationality *</label>
-                  <input type="text" name="nationality" required placeholder="e.g. India, Nepal, Bangladesh">
+                  <label>Email *</label>
+                  <input type="email" name="applicant_email" required placeholder="you@email.com" autocomplete="email">
                 </div>
               </div>
               <div class="form-row">
@@ -188,83 +188,87 @@
                   <input type="date" name="date_of_birth" required>
                 </div>
                 <div class="form-group">
-                  <label>Passport Number *</label>
-                  <input type="text" name="passport_number" required placeholder="A12345678">
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label>ID Type *</label>
-                  <select name="id_type" required onchange="updateIdLabel()">
-                    <option value="">Select</option>
-                    <option value="aadhaar">Aadhaar Card</option>
-                    <option value="passport">Passport</option>
-                    <option value="national_id">National ID</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label id="id-number-label">ID / Aadhaar Number *</label>
-                  <input type="text" name="id_number" required placeholder="Enter ID number">
+                  <label>Home Address *</label>
+                  <input type="text" name="address" required placeholder="Street, area, city">
                 </div>
               </div>
             </div>
 
             <div class="form-section">
-              <h3>Stay, City &amp; Job</h3>
+              <h3>2. Passport &amp; ID</h3>
               <div class="form-row">
+                <div class="form-group">
+                  <label>Passport Country (apply from) *</label>
+                  <select name="passport_country" id="passport-country" required onchange="onPassportCountryChange()">
+                    <option value="">Select country</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>Passport Number *</label>
+                  <input type="text" name="passport_number" required placeholder="e.g. AB1234567" autocomplete="off">
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>National ID Type *</label>
+                  <select name="id_type" id="id-type" required onchange="updateIdLabel()">
+                    <option value="">Select</option>
+                    <option value="passport">Passport</option>
+                    <option value="aadhaar">Aadhaar (India)</option>
+                    <option value="cnic">CNIC (Pakistan)</option>
+                    <option value="national_id">National ID</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label id="id-number-label">ID Number *</label>
+                  <input type="text" name="id_number" id="id-number" required placeholder="Aadhaar / CNIC / National ID">
+                </div>
+              </div>
+            </div>
+
+            <div class="form-section">
+              <h3>3. Current &amp; Destination</h3>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Current Country *</label>
+                  <select name="residence" id="current-country" required onchange="onCurrentCountryChange()">
+                    <option value="">Select country</option>
+                  </select>
+                </div>
                 <div class="form-group">
                   <label>Current City *</label>
                   <select name="current_city" id="current-city" required>
                     <option value="">Select city</option>
                   </select>
                 </div>
+              </div>
+              <div class="form-row">
                 <div class="form-group">
-                  <label>Preferred Destination City *</label>
+                  <label>Destination Country</label>
+                  <input type="text" id="dest-country-display" readonly>
+                </div>
+                <div class="form-group">
+                  <label>Preferred City *</label>
                   <select name="preferred_city" id="preferred-city" required>
                     <option value="">Select city</option>
                   </select>
                 </div>
               </div>
+            </div>
+
+            <div class="form-section">
+              <h3>4. Work &amp; Education</h3>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Target Job (listing)</label>
-                  <select name="job_id" id="apply-job-id" onchange="onApplyJobChange()">
-                    <option value="">Custom / not listed</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label>Job / Occupation *</label>
-                  <input type="text" name="occupation" id="occupation-input" list="job-title-list" required placeholder="e.g. Software Engineer">
-                  <datalist id="job-title-list"></datalist>
-                  <input type="hidden" name="target_job" id="target-job-input" value="">
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label>Visa Duration *</label>
-                  <select name="visa_duration" required>
+                  <label>Education *</label>
+                  <select name="education" required>
                     <option value="">Select</option>
-                    <option value="90">90 days</option>
-                    <option value="180">6 months</option>
-                    <option value="365">1 year</option>
-                    <option value="730">2 years</option>
-                    <option value="1095">3+ years / PR track</option>
+                    <option value="high_school">High school</option>
+                    <option value="diploma">Diploma</option>
+                    <option value="bachelor">Bachelor's</option>
+                    <option value="master">Master's / PhD</option>
                   </select>
                 </div>
-                <div class="form-group">
-                  <label>Purpose *</label>
-                  <select name="purpose" required>
-                    <option value="">Select</option>
-                    <option value="work" selected>Work / Job</option>
-                    <option value="study">Study</option>
-                    <option value="pr">PR / Immigration</option>
-                    <option value="family">Family Visit</option>
-                    <option value="tourism">Tourism</option>
-                    <option value="business">Business</option>
-                  </select>
-                </div>
-              </div>
-              <div class="form-row">
                 <div class="form-group">
                   <label>Work Experience *</label>
                   <select name="work_experience" required>
@@ -276,23 +280,41 @@
                     <option value="10+">10+ years</option>
                   </select>
                 </div>
+              </div>
+              <div class="form-row">
                 <div class="form-group">
-                  <label>Education *</label>
-                  <select name="education" required>
-                    <option value="">Select</option>
-                    <option value="diploma">Diploma</option>
-                    <option value="bachelor">Bachelor's</option>
-                    <option value="master">Master's / PhD</option>
+                  <label>Job listing (optional)</label>
+                  <select name="job_id" id="apply-job-id" onchange="onApplyJobChange()">
+                    <option value="">Custom / not listed</option>
                   </select>
+                </div>
+                <div class="form-group">
+                  <label>Job / Occupation *</label>
+                  <input type="text" name="occupation" id="occupation-input" list="job-title-list" required placeholder="e.g. Cook, Driver, Nurse">
+                  <datalist id="job-title-list"></datalist>
+                  <input type="hidden" name="target_job" id="target-job-input" value="">
                 </div>
               </div>
               <div class="form-row">
                 <div class="form-group">
-                  <label>Travel Date *</label>
-                  <input type="date" name="travel_date" required>
+                  <label>Purpose *</label>
+                  <select name="purpose" required>
+                    <option value="work" selected>Work / Job</option>
+                    <option value="study">Study</option>
+                    <option value="pr">PR / Immigration</option>
+                    <option value="family">Family Visit</option>
+                    <option value="tourism">Tourism</option>
+                    <option value="business">Business</option>
+                  </select>
                 </div>
                 <div class="form-group">
-                  <label>Employment Status *</label>
+                  <label>Planned Travel Date *</label>
+                  <input type="date" name="travel_date" required>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Employment Status</label>
                   <select name="employment_status">
                     <option value="employed">Employed</option>
                     <option value="self_employed">Self-employed</option>
@@ -300,42 +322,32 @@
                     <option value="unemployed">Unemployed</option>
                   </select>
                 </div>
-              </div>
-              <div class="form-row">
                 <div class="form-group">
-                  <label>Net Worth (USD) *</label>
-                  <select name="net_worth" required>
-                    <option value="">Select</option>
-                    <option value="under_10k">Under $10k</option>
-                    <option value="10k_50k">$10k – $50k</option>
-                    <option value="50k_100k">$50k – $100k</option>
-                    <option value="100k_plus">$100k+</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label>Annual Income (USD) *</label>
-                  <select name="annual_income" required>
-                    <option value="">Select</option>
-                    <option value="under_15k">Under $15k</option>
-                    <option value="15k_30k">$15k – $30k</option>
-                    <option value="30k_60k">$30k – $60k</option>
-                    <option value="60k_plus">$60k+</option>
+                  <label>Stay duration</label>
+                  <select name="visa_duration">
+                    <option value="365" selected>About 1 year</option>
+                    <option value="180">6 months</option>
+                    <option value="730">2 years</option>
+                    <option value="1095">3+ years / PR track</option>
+                    <option value="90">90 days</option>
                   </select>
                 </div>
               </div>
             </div>
 
-            <!-- Hidden defaults for server -->
-            <input type="hidden" name="residence" value="India">
+            <input type="hidden" name="nationality" id="nationality-hidden" value="">
             <input type="hidden" name="language" value="fluent">
             <input type="hidden" name="trip_funds" value="5k_10k">
+            <input type="hidden" name="net_worth" value="under_10k">
+            <input type="hidden" name="annual_income" value="under_15k">
             <input type="hidden" name="notes" value="">
 
             <div class="form-section">
               <div class="order-summary" id="order-summary"></div>
+              <p class="form-hint">After submit you get a Tracking ID. Save it — admin reviews, then payment + KYC unlock.</p>
             </div>
 
-            <button type="submit" class="btn btn-primary btn-lg btn-full">Submit Assessment</button>
+            <button type="submit" class="btn btn-primary btn-lg btn-full">Submit Application</button>
           </form>
         </div>
       </section>
@@ -482,15 +494,32 @@
       <section id="view-success" class="view">
         <div class="success-container">
           <div class="success-icon">✅</div>
-          <h1>Assessment Submitted</h1>
-          <p>Our team will review your profile and contact you by email.</p>
+          <h1>Application received</h1>
+          <p>Copy your Tracking ID now — you need it to track payment, KYC, and visa status.</p>
           <div class="success-details" id="success-details"></div>
           <div class="hero-actions">
-            <button class="btn btn-primary" onclick="openTrackFromRef(document.getElementById('success-ref-id')?.textContent?.trim() || localStorage.getItem('nexorago_last_ref'))">Track Application</button>
-            <button class="btn btn-outline" onclick="copyTrackingId()">Copy Tracking ID</button>
+            <button class="btn btn-primary" onclick="copyTrackingId()">Copy Tracking ID</button>
+            <button class="btn btn-outline" onclick="openTrackFromRef(document.getElementById('success-ref-id')?.textContent?.trim() || localStorage.getItem('nexorago_last_ref'))">Track Status</button>
           </div>
         </div>
       </section>
+
+      <!-- Payment / processing ticket modal -->
+      <div id="ticket-modal" class="admin-modal" aria-hidden="true" onclick="if(event.target===this)closeTicketModal()">
+        <div class="admin-modal-card ticket-card" role="dialog" aria-modal="true">
+          <div class="admin-modal-head">
+            <h3>Payment &amp; Processing Ticket</h3>
+            <button type="button" class="btn btn-sm btn-outline" onclick="closeTicketModal()">Close</button>
+          </div>
+          <div class="admin-modal-body">
+            <div id="ticket-print-area" class="ticket-print-area"></div>
+            <div class="admin-detail-actions" style="margin-top:1rem;">
+              <button type="button" class="btn btn-primary" onclick="downloadTicketPng()">Download PNG</button>
+              <button type="button" class="btn btn-outline" onclick="printTicketPdf()">Print / Save PDF</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </main>
 
     <footer class="footer">

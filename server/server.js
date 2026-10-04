@@ -5,7 +5,13 @@ const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const multer = require('multer');
 const db = require('./db');
-const { DESTINATION_CITIES, HOME_CITIES, JOB_TITLES } = require('./cities');
+const {
+  DESTINATION_CITIES,
+  HOME_CITIES,
+  HOME_CITIES_BY_COUNTRY,
+  PASSPORT_COUNTRIES,
+  JOB_TITLES,
+} = require('./cities');
 const { isServerless, platformLabel } = require('./runtime');
 
 const app = express();
@@ -144,17 +150,23 @@ app.get('/api/health', (req, res) => {
 
 app.get('/api/cities', (req, res) => {
   const code = String(req.query.country || '').toUpperCase();
-  if (code) {
+  const home = String(req.query.home || '').toUpperCase();
+  if (code || home) {
     return res.json({
-      country_code: code,
-      cities: DESTINATION_CITIES[code] || [],
-      home_cities: HOME_CITIES,
+      country_code: code || null,
+      cities: code ? (DESTINATION_CITIES[code] || []) : [],
+      home_cities: home
+        ? (HOME_CITIES_BY_COUNTRY[home] || HOME_CITIES_BY_COUNTRY.OTHER || HOME_CITIES)
+        : HOME_CITIES,
+      passport_countries: PASSPORT_COUNTRIES,
       job_titles: JOB_TITLES,
     });
   }
   res.json({
     destinations: DESTINATION_CITIES,
     home_cities: HOME_CITIES,
+    home_cities_by_country: HOME_CITIES_BY_COUNTRY,
+    passport_countries: PASSPORT_COUNTRIES,
     job_titles: JOB_TITLES,
   });
 });
@@ -214,26 +226,39 @@ app.get('/api/countries', (req, res) => {
 });
 
 app.post('/api/orders', async (req, res) => {
-  const {
-    visa_id, applicant_name, applicant_email, applicant_phone,
+  let {
+    visa_id, applicant_name, first_name, last_name, applicant_email, applicant_phone,
     passport_number, travel_date, nationality, age, date_of_birth, residence,
-    education, work_experience, language, notes,
+    education, work_experience, language, notes, address,
     visa_duration, purpose, occupation, employment_status,
     id_type, id_number, net_worth, annual_income, trip_funds,
-    current_city, preferred_city, job_id, target_job,
+    current_city, preferred_city, job_id, target_job, passport_country,
   } = req.body;
+
+  // Build full name from first + last when provided
+  if (!applicant_name && (first_name || last_name)) {
+    applicant_name = [first_name, last_name].filter(Boolean).join(' ').trim();
+  }
+  nationality = nationality || passport_country || residence;
+  residence = residence || passport_country || nationality;
+  language = language || 'fluent';
+  trip_funds = trip_funds || '5k_10k';
+  net_worth = net_worth || 'under_10k';
+  annual_income = annual_income || 'under_15k';
+  employment_status = employment_status || 'employed';
+  visa_duration = visa_duration || '365';
+  if (address) {
+    notes = notes ? `${notes}\nAddress: ${address}` : `Address: ${address}`;
+  }
 
   if (!visa_id || !applicant_name || !applicant_email || !applicant_phone || !passport_number || !travel_date) {
     return res.status(400).json({ error: 'Please fill all required fields' });
   }
-  if (!visa_duration || !purpose || !occupation || !employment_status || !work_experience || !education) {
-    return res.status(400).json({ error: 'Please complete stay & work details' });
+  if (!purpose || !occupation || !work_experience || !education) {
+    return res.status(400).json({ error: 'Please complete education, experience, and job details' });
   }
-  if (!nationality || !residence || !id_type || !id_number || !language || !date_of_birth) {
-    return res.status(400).json({ error: 'Please complete identity details' });
-  }
-  if (!net_worth || !annual_income || !trip_funds) {
-    return res.status(400).json({ error: 'Please complete financial profile' });
+  if (!nationality || !id_type || !id_number || !date_of_birth) {
+    return res.status(400).json({ error: 'Please complete passport / ID details' });
   }
   if (!current_city || !preferred_city) {
     return res.status(400).json({ error: 'Please select your current city and preferred destination city' });
@@ -244,6 +269,9 @@ app.post('/api/orders', async (req, res) => {
 
   if (id_type === 'aadhaar' && !/^\d{12}$/.test(String(id_number).replace(/\s/g, ''))) {
     return res.status(400).json({ error: 'Aadhaar must be a 12-digit number' });
+  }
+  if (id_type === 'cnic' && !/^(\d{5}-\d{7}-\d|\d{13})$/.test(String(id_number).replace(/\s/g, ''))) {
+    return res.status(400).json({ error: 'CNIC must be 13 digits (e.g. 42101-1234567-1)' });
   }
 
   const visa = db.prepare('SELECT * FROM visas WHERE id = ?').get(visa_id);

@@ -1,6 +1,7 @@
 // ── State ──
 let currentVisa = null;
 let currentOrder = null;
+let lastApplicantSnapshot = null;
 let formStep = 1;
 let adminToken = localStorage.getItem('nexorago_admin_token') || null;
 const ADMIN_SECRET_PATH = '/admin82832783';
@@ -301,32 +302,56 @@ async function applyForJob(jobId) {
   } catch (e) { /* handled */ }
 }
 
+let passportCountriesCache = [];
+
 async function prepareApplyForm(selectedJob = null) {
   try {
     const meta = await api(`/api/cities?country=${encodeURIComponent(currentVisa?.country_code || '')}`);
+    passportCountriesCache = meta.passport_countries || [];
+
+    const passSel = document.getElementById('passport-country');
+    const currCountry = document.getElementById('current-country');
     const homeSel = document.getElementById('current-city');
     const prefSel = document.getElementById('preferred-city');
     const jobSel = document.getElementById('apply-job-id');
     const list = document.getElementById('job-title-list');
+    const destDisp = document.getElementById('dest-country-display');
+
+    if (destDisp && currentVisa) {
+      destDisp.value = `${currentVisa.flag_emoji || ''} ${currentVisa.country_name}`.trim();
+    }
+
+    const countryOpts = '<option value="">Select country</option>' +
+      passportCountriesCache.map((c) =>
+        `<option value="${escapeHtml(c.name)}" data-code="${escapeHtml(c.code)}">${escapeHtml(c.flag || '')} ${escapeHtml(c.name)}</option>`
+      ).join('');
+    if (passSel) passSel.innerHTML = countryOpts;
+    if (currCountry) currCountry.innerHTML = countryOpts;
 
     if (homeSel) {
       homeSel.innerHTML = '<option value="">Select city</option>' +
-        (meta.home_cities || []).map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+        (meta.home_cities || []).map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
     }
     if (prefSel) {
       const cities = meta.cities || [];
       prefSel.innerHTML = '<option value="">Select city</option>' +
-        cities.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('') +
+        cities.map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('') +
         '<option value="Other">Other</option>';
     }
     if (list) {
-      list.innerHTML = (meta.job_titles || []).map(t => `<option value="${escapeHtml(t)}"></option>`).join('');
+      list.innerHTML = (meta.job_titles || []).map((t) => `<option value="${escapeHtml(t)}"></option>`).join('');
     }
 
     const countryJobs = await api(`/api/jobs?country=${encodeURIComponent(currentVisa?.country_code || '')}`);
     if (jobSel) {
       jobSel.innerHTML = '<option value="">Custom / not listed</option>' +
-        countryJobs.map(j => `<option value="${j.id}">${escapeHtml(j.title)} — ${escapeHtml(j.city)}</option>`).join('');
+        countryJobs.map((j) => `<option value="${j.id}">${escapeHtml(j.title)} — ${escapeHtml(j.city)}</option>`).join('');
+    }
+
+    // Default passport country Pakistan/India common
+    if (passSel && !passSel.value) {
+      const prefer = [...passSel.options].find((o) => /Pakistan|India/i.test(o.value));
+      if (prefer) { passSel.value = prefer.value; onPassportCountryChange(); }
     }
 
     if (selectedJob) {
@@ -343,6 +368,52 @@ async function prepareApplyForm(selectedJob = null) {
       onApplyJobChange();
     }
   } catch (e) { /* handled */ }
+}
+
+async function onPassportCountryChange() {
+  const passSel = document.getElementById('passport-country');
+  const name = passSel?.value || '';
+  const opt = passSel?.selectedOptions?.[0];
+  const code = opt?.dataset?.code || '';
+  const nat = document.getElementById('nationality-hidden');
+  if (nat) nat.value = name;
+
+  const currCountry = document.getElementById('current-country');
+  if (currCountry && name && !currCountry.value) {
+    currCountry.value = name;
+    await onCurrentCountryChange();
+  }
+
+  const idType = document.getElementById('id-type');
+  if (idType && code) {
+    const pc = passportCountriesCache.find((c) => c.code === code);
+    const types = pc?.idTypes || ['passport', 'national_id'];
+    const labels = {
+      passport: 'Passport',
+      aadhaar: 'Aadhaar (India)',
+      cnic: 'CNIC (Pakistan)',
+      national_id: 'National ID',
+    };
+    idType.innerHTML = '<option value="">Select</option>' +
+      types.map((t) => `<option value="${t}">${labels[t] || t}</option>`).join('');
+    if (types.includes('cnic')) idType.value = 'cnic';
+    else if (types.includes('aadhaar')) idType.value = 'aadhaar';
+    else idType.value = types[0] || 'passport';
+    updateIdLabel();
+  }
+}
+
+async function onCurrentCountryChange() {
+  const currCountry = document.getElementById('current-country');
+  const homeSel = document.getElementById('current-city');
+  if (!currCountry || !homeSel) return;
+  const opt = currCountry.selectedOptions?.[0];
+  const code = opt?.dataset?.code || '';
+  try {
+    const meta = await api(`/api/cities?home=${encodeURIComponent(code)}&country=${encodeURIComponent(currentVisa?.country_code || '')}`, { silent: true });
+    homeSel.innerHTML = '<option value="">Select city</option>' +
+      (meta.home_cities || []).map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('');
+  } catch { /* ignore */ }
 }
 
 function onApplyJobChange() {
@@ -371,18 +442,11 @@ function startApplication(visaId, selectedJob = null) {
   const travelInput = document.querySelector('#apply-form input[name="travel_date"]');
   if (travelInput) {
     const d = new Date();
-    d.setDate(d.getDate() + 14);
-    travelInput.min = d.toISOString().slice(0, 10);
+    d.setDate(d.getDate() + 30);
+    travelInput.min = new Date().toISOString().slice(0, 10);
+    travelInput.value = d.toISOString().slice(0, 10);
   }
 
-  const setHidden = (name, val) => {
-    const el = document.querySelector(`#apply-form [name="${name}"]`);
-    if (el) el.value = val;
-  };
-  setHidden('residence', 'India');
-  setHidden('language', 'fluent');
-  setHidden('trip_funds', '5k_10k');
-  setHidden('notes', '');
   const emp = document.querySelector('#apply-form [name="employment_status"]');
   if (emp) emp.value = 'employed';
 
@@ -462,11 +526,11 @@ function updateIdLabel() {
   const input = document.querySelector('#apply-form input[name="id_number"]');
   const map = {
     aadhaar: ['Aadhaar Number *', '12-digit Aadhaar'],
+    cnic: ['CNIC Number *', '42101-1234567-1'],
     passport: ['Passport Number *', 'Passport number'],
     national_id: ['National ID Number *', 'ID number'],
-    drivers_license: ["Driver's License Number *", 'License number'],
   };
-  const [text, ph] = map[type] || ['ID / Aadhaar Number *', 'Enter ID number'];
+  const [text, ph] = map[type] || ['ID Number *', 'Enter ID number'];
   if (label) label.textContent = text;
   if (input) input.placeholder = ph;
 }
@@ -531,13 +595,30 @@ async function submitApplication(e) {
 
   const data = Object.fromEntries(new FormData(form));
   data.visa_id = currentVisa.id;
+  data.applicant_name = [data.first_name, data.last_name].filter(Boolean).join(' ').trim();
+  data.nationality = data.nationality || data.passport_country || data.residence;
+  data.residence = data.residence || data.passport_country || data.nationality;
   data.age = calcAge(data.date_of_birth);
-  data.residence = data.residence || data.nationality || 'India';
   data.employment_status = data.employment_status || 'employed';
   data.language = data.language || 'fluent';
   data.trip_funds = data.trip_funds || '5k_10k';
+  data.net_worth = data.net_worth || 'under_10k';
+  data.annual_income = data.annual_income || 'under_15k';
+  data.visa_duration = data.visa_duration || '365';
   data.target_job = data.target_job || data.occupation;
   if (!data.job_id) delete data.job_id;
+
+  lastApplicantSnapshot = {
+    name: data.applicant_name,
+    phone: data.applicant_phone,
+    email: data.applicant_email,
+    address: data.address || '',
+    passport_country: data.passport_country || data.nationality,
+    passport_number: data.passport_number,
+    current_city: data.current_city,
+    preferred_city: data.preferred_city,
+    occupation: data.occupation,
+  };
 
   const btn = form.querySelector('button[type="submit"]');
   if (btn) { btn.disabled = true; btn.textContent = 'Submitting...'; }
@@ -552,39 +633,54 @@ async function submitApplication(e) {
       id: result.id,
       order_number: result.order_number || result.order_id,
       kyc_fee: result.kyc_fee,
+      applicant: lastApplicantSnapshot,
+      visa: currentVisa,
     };
 
     localStorage.setItem('nexorago_last_ref', currentOrder.order_number);
+    localStorage.setItem('nexorago_last_applicant', JSON.stringify(lastApplicantSnapshot));
 
     const ref = currentOrder.order_number;
     document.getElementById('success-details').innerHTML = `
-      <div class="ref-box">
-        <div class="ref-label">Your Tracking ID — copy &amp; save</div>
+      <div class="ref-box ref-box-emphasis">
+        <div class="ref-label">Save this Tracking ID</div>
         <div class="ref-id" id="success-ref-id">${escapeHtml(ref)}</div>
-        <button type="button" class="btn btn-primary btn-full" onclick="copyTrackingId('${escapeHtml(ref)}')">Copy Tracking ID</button>
+        <button type="button" class="btn btn-primary btn-full" id="copy-ref-btn" onclick="copyTrackingId('${escapeJs(ref)}')">📋 Copy Tracking ID</button>
+        <p class="ref-warn">Important: copy now. You will need this ID for Track, payment, and KYC.</p>
       </div>
-      <div class="summary-row" style="margin-top:1rem;"><span>Visa</span><span>${escapeHtml(currentVisa.country_name)} — ${escapeHtml(currentVisa.visa_type)}</span></div>
-      <div class="summary-row"><span>Status</span><span>Under review</span></div>
-      <p style="margin-top:0.75rem;font-size:0.85rem;color:var(--text-muted);">Use Track later with this ID. After approval, KYC verify will appear there.</p>
+      <div class="summary-row" style="margin-top:1rem;"><span>Name</span><span>${escapeHtml(data.applicant_name)}</span></div>
+      <div class="summary-row"><span>Visa</span><span>${escapeHtml(currentVisa.country_name)} — ${escapeHtml(currentVisa.visa_type)}</span></div>
+      <div class="summary-row"><span>Next step</span><span>Admin review</span></div>
+      <ol class="next-steps-list">
+        <li>Admin reviews your form</li>
+        <li>When approved → pay processing fee</li>
+        <li>Complete KYC documents</li>
+        <li>Visa processing → final visa stage</li>
+      </ol>
     `;
 
     const trackInput = document.getElementById('track-order-id');
     if (trackInput) trackInput.value = ref;
 
     form.reset();
-    showToast('Submitted — copy your Tracking ID', 'success');
+    showToast('Submitted — please copy your Tracking ID', 'success');
     showView('success');
+    setTimeout(() => copyTrackingId(ref), 400);
   } catch (err) { /* handled */ }
   finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Submit Assessment'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'Submit Application'; }
   }
 }
 
 function copyTrackingId(ref) {
-  const id = ref || document.getElementById('success-ref-id')?.textContent?.trim();
+  const id = ref || document.getElementById('success-ref-id')?.textContent?.trim() || localStorage.getItem('nexorago_last_ref');
   if (!id) return;
   navigator.clipboard?.writeText(id)
-    .then(() => showToast('Tracking ID copied', 'success'))
+    .then(() => {
+      showToast('Tracking ID copied ✓', 'success');
+      const btn = document.getElementById('copy-ref-btn');
+      if (btn) btn.textContent = '✓ Copied';
+    })
     .catch(() => prompt('Copy your Tracking ID:', id));
 }
 
@@ -593,74 +689,102 @@ function displayTrackResult(order) {
     id: order.id,
     order_number: order.order_number,
     kyc_fee: order.kyc_fee || order.amount || 1,
+    order_status: order.order_status,
+    payment_status: order.payment_status,
+    kyc_status: order.kyc_status,
+    applicant_name: order.applicant_name,
+    country_name: order.country_name,
+    visa_type: order.visa_type,
+    flag_emoji: order.flag_emoji,
   };
 
-  const approved = order.order_status === 'completed';
-  const paid = order.payment_status === 'confirmed';
-  const kycDone = ['submitted', 'verified', 'approved'].includes(order.kyc_status);
-  const reviewing = order.order_status === 'processing' || approved;
+  const status = order.order_status;
+  const approved = status === 'completed' || status === 'approved';
+  const paid = ['confirmed', 'paid'].includes(order.payment_status);
+  const kycDone = ['submitted', 'pending', 'verified', 'approved'].includes(order.kyc_status)
+    && order.kyc_status !== 'n/a' && order.kyc_status !== 'required';
+  const visaProcessing = status === 'visa_processing' || status === 'processing_visa';
+  const issued = status === 'issued' || status === 'final';
 
   let stepIndex = 0;
-  if (reviewing) stepIndex = 1;
-  if (approved) stepIndex = 2;
-  if (approved && (paid || kycDone)) stepIndex = 3;
+  if (status === 'processing' || approved || visaProcessing || issued) stepIndex = 1;
+  if (approved || paid || kycDone || visaProcessing || issued) stepIndex = 2;
+  if (paid || kycDone || visaProcessing || issued) stepIndex = 3;
+  if (kycDone || visaProcessing || issued) stepIndex = 4;
+  if (visaProcessing || issued) stepIndex = 5;
+  if (issued) stepIndex = 6;
 
   const steps = [
     { label: 'Received' },
-    { label: 'Reviewing' },
-    { label: 'Approved' },
+    { label: 'Review' },
+    { label: 'Payment' },
     { label: 'KYC' },
+    { label: 'Processing' },
+    { label: 'Final Visa' },
   ];
 
   let actionHtml = '';
-  if (!approved) {
+  if (issued) {
     actionHtml = `
-      <div style="margin-top:1.25rem;padding:1rem;border-radius:var(--radius-sm);background:var(--bg-glass);">
-        <p style="color:var(--text-secondary);font-size:0.9rem;margin:0;">
-          Status: <strong>Under review</strong>. When approved, a <strong>Verify KYC</strong> button will appear here.
-        </p>
+      <div class="track-action success-panel">
+        <p><strong>Final visa stage</strong> — your file is marked as issued / complete.</p>
+        <button class="btn btn-outline btn-full" onclick="openProcessingTicket()">View / Print Ticket</button>
+      </div>`;
+  } else if (visaProcessing) {
+    actionHtml = `
+      <div class="track-action">
+        <p>KYC received. Your visa is <strong>in processing</strong>. We will update when the final visa stage is ready.</p>
+        <button class="btn btn-outline btn-full" onclick="openProcessingTicket()">Download processing ticket</button>
+      </div>`;
+  } else if (!approved) {
+    actionHtml = `
+      <div class="track-action">
+        <p>Status: <strong>Under review</strong>. When admin approves, <strong>Payment</strong> unlocks here.</p>
       </div>`;
   } else if (!paid) {
     actionHtml = `
-      <div style="margin-top:1.25rem;padding:1rem;border-radius:var(--radius-sm);background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.35);">
-        <p style="color:var(--success);margin-bottom:0.75rem;font-size:0.95rem;font-weight:600;">
-          Application approved — complete KYC verification
-        </p>
-        <p style="color:var(--text-secondary);margin-bottom:0.75rem;font-size:0.85rem;">
-          Pay $${Number(order.kyc_fee || 1)} verification fee, then upload your ID documents.
-        </p>
-        <button class="btn btn-primary btn-full" onclick="goToKycPayment()">Verify KYC — Pay $${Number(order.kyc_fee || 1)} →</button>
+      <div class="track-action success-panel">
+        <p><strong>Approved for payment</strong></p>
+        <p>Pay <strong>$${Number(order.kyc_fee || 1)}</strong> processing / KYC fee, then upload documents.</p>
+        <button class="btn btn-primary btn-full" onclick="goToKycPayment()">Pay $${Number(order.kyc_fee || 1)} &amp; continue →</button>
       </div>`;
   } else if (!kycDone) {
     actionHtml = `
-      <div style="margin-top:1.25rem;">
-        <p style="color:var(--success);margin-bottom:0.75rem;font-size:0.9rem;">Fee paid. Upload documents to finish KYC.</p>
-        <button class="btn btn-primary btn-full" onclick="showKYC()">Verify KYC — Upload Documents →</button>
+      <div class="track-action success-panel">
+        <p>Fee paid. Upload ID + selfie for KYC.</p>
+        <button class="btn btn-primary btn-full" onclick="showKYC()">Upload KYC documents →</button>
+        <button class="btn btn-outline btn-full" style="margin-top:0.5rem;" onclick="openProcessingTicket()">Download payment ticket</button>
       </div>`;
   } else {
     actionHtml = `
-      <div style="margin-top:1.25rem;">
+      <div class="track-action">
         <div class="summary-row"><span>Payment</span><span class="status-badge status-confirmed">paid</span></div>
         <div class="summary-row"><span>KYC</span><span class="status-badge status-${escapeHtml(order.kyc_status)}">${escapeHtml(order.kyc_status)}</span></div>
+        <p style="margin-top:0.75rem;">Waiting for admin to move file to <strong>visa processing</strong> / final visa.</p>
+        <button class="btn btn-outline btn-full" onclick="openProcessingTicket()">Download ticket (PNG / PDF)</button>
       </div>`;
   }
 
   document.getElementById('track-result').innerHTML = `
     <div class="order-card">
       <div class="order-card-header">
-        <h3>${order.flag_emoji} ${escapeHtml(order.country_name)} — ${escapeHtml(order.visa_type)}</h3>
-        <span class="status-badge status-${escapeHtml(order.order_status)}">${escapeHtml(order.order_status)}</span>
+        <h3>${order.flag_emoji || ''} ${escapeHtml(order.country_name || '')} — ${escapeHtml(order.visa_type || '')}</h3>
+        <span class="status-badge status-${escapeHtml(status)}">${escapeHtml(status)}</span>
       </div>
-      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;font-family:monospace;">${escapeHtml(order.order_number || order.id)}</p>
-      <div class="status-timeline steps-4">
+      <p class="track-ref">${escapeHtml(order.order_number || order.id)}
+        <button type="button" class="btn btn-sm btn-outline" onclick="copyTrackingId('${escapeJs(order.order_number)}')">Copy</button>
+      </p>
+      <div class="status-timeline steps-6">
         ${steps.map((s, i) => `
-          <div class="timeline-step ${i <= stepIndex ? 'completed' : ''} ${i === stepIndex ? 'active' : ''}">
+          <div class="timeline-step ${i < stepIndex ? 'completed' : ''} ${i === Math.min(stepIndex, steps.length - 1) ? 'active' : ''}">
             <div class="timeline-dot">${i + 1}</div>
             <div class="timeline-label">${s.label}</div>
           </div>
         `).join('')}
       </div>
-      <div class="summary-row"><span>Submitted</span><span>${new Date(order.created_at).toLocaleDateString()}</span></div>
+      <div class="summary-row"><span>Applicant</span><span>${escapeHtml(order.applicant_name || '—')}</span></div>
+      <div class="summary-row"><span>Submitted</span><span>${order.created_at ? new Date(order.created_at).toLocaleDateString() : '—'}</span></div>
+      <div class="summary-row"><span>Fee</span><span>$${Number(order.kyc_fee || order.amount || 0)}</span></div>
       ${actionHtml}
     </div>
   `;
@@ -675,7 +799,7 @@ async function goToKycPayment() {
   try {
     const info = await api(`/api/orders/${currentOrder.id}/kyc-fee`);
     currentOrder.kyc_fee = info.kyc_fee;
-    if (info.payment_status === 'confirmed') {
+    if (['confirmed', 'paid'].includes(info.payment_status)) {
       showToast('Fee already paid — continue to KYC', 'info');
       showKYC();
       return;
@@ -693,22 +817,30 @@ function showCardPayment(info) {
     showToast('Payment page missing — refresh the page', 'error');
     return;
   }
+  const applicant = currentOrder?.applicant || lastApplicantSnapshot
+    || (() => { try { return JSON.parse(localStorage.getItem('nexorago_last_applicant') || 'null'); } catch { return null; } })();
   container.innerHTML = `
     <div class="payment-panel card-form">
       <div class="order-summary" style="margin-bottom:1.25rem;">
         <div class="summary-row">
-          <span>${info.flag_emoji || ''} ${escapeHtml(info.country_name || '')} — ${escapeHtml(info.visa_type || 'KYC')}</span>
+          <span>${info.flag_emoji || ''} ${escapeHtml(info.country_name || currentOrder?.country_name || '')} — ${escapeHtml(info.visa_type || currentOrder?.visa_type || 'Visa')}</span>
         </div>
+        <div class="summary-row"><span>Applicant</span><span>${escapeHtml(applicant?.name || currentOrder?.applicant_name || '—')}</span></div>
+        <div class="summary-row"><span>Phone</span><span>${escapeHtml(applicant?.phone || '—')}</span></div>
+        <div class="summary-row"><span>Tracking ID</span><span style="font-family:monospace">${escapeHtml(currentOrder?.order_number || '')}</span></div>
         <div class="summary-row">
-          <span>KYC verification fee</span>
+          <span>Processing / KYC fee</span>
           <span><strong>$${fee}</strong></span>
         </div>
-        <p style="font-size:0.8rem;color:var(--text-muted);margin-top:0.5rem;">Dummy card payment for now. Stripe later.</p>
+        <p style="font-size:0.85rem;color:var(--text-secondary);margin-top:0.75rem;">
+          Why this fee: case review, document check, processing file, and KYC verification before the final visa stage.
+        </p>
+        <p style="font-size:0.8rem;color:var(--text-muted);margin-top:0.35rem;">After pay you can download a PNG / PDF ticket.</p>
       </div>
       <form onsubmit="processCardPayment(event)">
         <div class="form-group">
           <label>Cardholder Name</label>
-          <input type="text" name="card_name" required placeholder="Name on card" autocomplete="cc-name">
+          <input type="text" name="card_name" required placeholder="Name on card" autocomplete="cc-name" value="${escapeHtml(applicant?.name || '')}">
         </div>
         <div class="form-group">
           <label>Card Number</label>
@@ -755,10 +887,150 @@ async function processCardPayment(e) {
       method: 'POST',
       body: JSON.stringify(data),
     });
-    showToast(`Paid $${fee} — continue to KYC`, 'success');
-    setTimeout(() => showKYC(), 600);
+    currentOrder.payment_status = 'confirmed';
+    showToast(`Paid $${fee} — ticket ready, then KYC`, 'success');
+    openProcessingTicket({ afterPay: true });
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = `Pay $${fee}`; }
+  }
+}
+
+function buildTicketHtml(extra = {}) {
+  const fee = Number(currentOrder?.kyc_fee || 0);
+  let applicant = currentOrder?.applicant || lastApplicantSnapshot;
+  try {
+    if (!applicant) applicant = JSON.parse(localStorage.getItem('nexorago_last_applicant') || 'null');
+  } catch { applicant = null; }
+  const name = applicant?.name || currentOrder?.applicant_name || '—';
+  const phone = applicant?.phone || '—';
+  const email = applicant?.email || '—';
+  const address = applicant?.address || '—';
+  const passportCountry = applicant?.passport_country || '—';
+  const why = 'Processing & KYC verification fee for visa file handling, document check, and case preparation.';
+  return `
+    <div class="ticket-sheet" id="ticket-sheet">
+      <div class="ticket-brand">NexoraGo</div>
+      <div class="ticket-title">Payment &amp; Processing Ticket</div>
+      <div class="ticket-ref">${escapeHtml(currentOrder?.order_number || '')}</div>
+      <div class="ticket-grid">
+        <div><span>Name</span><strong>${escapeHtml(name)}</strong></div>
+        <div><span>Phone</span><strong>${escapeHtml(phone)}</strong></div>
+        <div><span>Email</span><strong>${escapeHtml(email)}</strong></div>
+        <div><span>Address</span><strong>${escapeHtml(address)}</strong></div>
+        <div><span>Passport country</span><strong>${escapeHtml(passportCountry)}</strong></div>
+        <div><span>Destination</span><strong>${escapeHtml((currentOrder?.flag_emoji || '') + ' ' + (currentOrder?.country_name || ''))}</strong></div>
+        <div><span>Visa type</span><strong>${escapeHtml(currentOrder?.visa_type || '')}</strong></div>
+        <div><span>Amount</span><strong>$${fee} USD</strong></div>
+        <div><span>Payment</span><strong>${escapeHtml(currentOrder?.payment_status || 'paid')}</strong></div>
+        <div><span>Date</span><strong>${new Date().toLocaleString()}</strong></div>
+      </div>
+      <div class="ticket-why">
+        <span>Why this fee</span>
+        <p>${why}</p>
+      </div>
+      <div class="ticket-footer">Keep this ticket for processing &amp; final visa stage. Print or save as PDF / PNG.</div>
+      ${extra.afterPay ? '<p class="ticket-next">Next: upload KYC documents after closing this ticket.</p>' : ''}
+    </div>
+  `;
+}
+
+function openProcessingTicket(extra = {}) {
+  if (!currentOrder?.order_number) {
+    showToast('Track your application first', 'warning');
+    return;
+  }
+  const modal = document.getElementById('ticket-modal');
+  const area = document.getElementById('ticket-print-area');
+  if (!modal || !area) return;
+  area.innerHTML = buildTicketHtml(extra);
+  modal.classList.add('is-open');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeTicketModal() {
+  const modal = document.getElementById('ticket-modal');
+  if (!modal) return;
+  modal.classList.remove('is-open');
+  modal.setAttribute('aria-hidden', 'true');
+  if (['paid', 'confirmed'].includes(currentOrder?.payment_status)) {
+    const kycOpen = !['submitted', 'verified', 'approved'].includes(currentOrder?.kyc_status);
+    if (kycOpen) setTimeout(() => showKYC(), 250);
+  }
+}
+
+function printTicketPdf() {
+  const sheet = document.getElementById('ticket-sheet');
+  if (!sheet) return;
+  const w = window.open('', '_blank', 'noopener,noreferrer,width=720,height=900');
+  if (!w) {
+    showToast('Allow popups to print / save PDF', 'warning');
+    return;
+  }
+  w.document.write(`<!doctype html><html><head><title>NexoraGo Ticket</title>
+    <style>
+      body{font-family:Georgia,serif;padding:24px;color:#111}
+      .ticket-brand{font-size:22px;font-weight:700}
+      .ticket-title{font-size:18px;margin:8px 0}
+      .ticket-ref{font-family:monospace;font-size:14px;margin-bottom:16px}
+      .ticket-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0}
+      .ticket-grid span{display:block;font-size:11px;color:#666;text-transform:uppercase}
+      .ticket-why{border-top:1px solid #ddd;padding-top:12px;margin-top:12px}
+      .ticket-footer{margin-top:20px;font-size:12px;color:#444}
+    </style></head><body>${sheet.outerHTML}
+    <script>window.onload=()=>{window.print();}</script></body></html>`);
+  w.document.close();
+}
+
+async function downloadTicketPng() {
+  const sheet = document.getElementById('ticket-sheet');
+  if (!sheet) return;
+  try {
+    const canvas = document.createElement('canvas');
+    const scale = 2;
+    const w = Math.max(sheet.offsetWidth, 360);
+    const h = Math.max(sheet.offsetHeight, 480);
+    canvas.width = w * scale;
+    canvas.height = h * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scale, scale);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#0a0e1a';
+    ctx.font = 'bold 20px Georgia, serif';
+    ctx.fillText('NexoraGo', 24, 36);
+    ctx.font = '16px Georgia, serif';
+    ctx.fillText('Payment & Processing Ticket', 24, 62);
+    ctx.font = '13px monospace';
+    ctx.fillText(currentOrder?.order_number || '', 24, 88);
+    ctx.font = '13px sans-serif';
+    let y = 120;
+    const fee = Number(currentOrder?.kyc_fee || 0);
+    let applicant = currentOrder?.applicant || lastApplicantSnapshot;
+    try { if (!applicant) applicant = JSON.parse(localStorage.getItem('nexorago_last_applicant') || 'null'); } catch { /* */ }
+    const lines = [
+      `Name: ${applicant?.name || currentOrder?.applicant_name || '—'}`,
+      `Phone: ${applicant?.phone || '—'}`,
+      `Email: ${applicant?.email || '—'}`,
+      `Address: ${applicant?.address || '—'}`,
+      `Passport country: ${applicant?.passport_country || '—'}`,
+      `Destination: ${currentOrder?.country_name || ''}`,
+      `Visa: ${currentOrder?.visa_type || ''}`,
+      `Amount: $${fee} USD`,
+      `Why: Processing & KYC verification for visa file handling`,
+      `Date: ${new Date().toLocaleString()}`,
+    ];
+    for (const line of lines) {
+      const parts = String(line).match(/.{1,48}/g) || [line];
+      for (const p of parts) { ctx.fillText(p, 24, y); y += 22; }
+    }
+    ctx.fillText('Keep for processing & final visa stage', 24, y + 16);
+    const a = document.createElement('a');
+    a.download = `${currentOrder?.order_number || 'ticket'}.png`;
+    a.href = canvas.toDataURL('image/png');
+    a.click();
+    showToast('PNG ticket downloaded', 'success');
+  } catch {
+    showToast('Could not create PNG — use Print / PDF', 'warning');
   }
 }
 
@@ -980,9 +1252,11 @@ async function openAdminOrder(orderId) {
       <div class="admin-detail-actions">
         <label>Application status
           <select id="adm-order-status">
-            <option value="pending" ${o.order_status === 'pending' ? 'selected' : ''}>Pending</option>
+            <option value="pending" ${o.order_status === 'pending' ? 'selected' : ''}>Pending (received)</option>
             <option value="processing" ${o.order_status === 'processing' ? 'selected' : ''}>Reviewing</option>
-            <option value="completed" ${o.order_status === 'completed' ? 'selected' : ''}>Approved (open KYC)</option>
+            <option value="completed" ${o.order_status === 'completed' ? 'selected' : ''}>Approve for payment / KYC</option>
+            <option value="visa_processing" ${o.order_status === 'visa_processing' ? 'selected' : ''}>Visa processing</option>
+            <option value="issued" ${o.order_status === 'issued' ? 'selected' : ''}>Final visa / issued</option>
             <option value="rejected" ${o.order_status === 'rejected' ? 'selected' : ''}>Rejected</option>
           </select>
         </label>

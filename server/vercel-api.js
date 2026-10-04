@@ -363,6 +363,83 @@ async function ensureBankStatementColumns(client) {
   }
 }
 
+const MAX_UPLOAD_BYTES = 2.5 * 1024 * 1024;
+const BANK_REVIEW_MS = 20 * 1000; // auto-verify after ~20s (client waits 20–30s)
+
+async function ensureOrderFilesSchema(client) {
+  await client.execute(`
+CREATE TABLE IF NOT EXISTS order_files (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  filename TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  data_base64 TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+)`);
+}
+
+function parseUploadPayload(fileObj, fieldName) {
+  if (!fileObj || typeof fileObj !== 'object') {
+    return { error: `${fieldName} file is required` };
+  }
+  const filename = String(fileObj.filename || fileObj.name || 'upload.bin').slice(0, 180);
+  const mime = String(fileObj.mime || fileObj.type || 'application/octet-stream').slice(0, 120);
+  let data = String(fileObj.data || fileObj.data_base64 || '');
+  if (data.includes(',')) data = data.split(',').pop();
+  data = data.replace(/\s/g, '');
+  if (!data) return { error: `${fieldName} file data is missing` };
+  const bytes = Math.floor((data.length * 3) / 4);
+  if (bytes > MAX_UPLOAD_BYTES) {
+    return { error: `${fieldName} must be under 2.5 MB` };
+  }
+  const okMime = /^(image\/(jpeg|jpg|png|webp)|application\/pdf)/i.test(mime)
+    || /\.(jpe?g|png|webp|pdf)$/i.test(filename);
+  if (!okMime) return { error: `${fieldName} must be JPG, PNG, or PDF` };
+  return { filename, mime, data };
+}
+
+async function saveOrderFile(client, orderId, kind, file) {
+  const id = (crypto.randomUUID && crypto.randomUUID()) || crypto.randomBytes(16).toString('hex');
+  const now = new Date().toISOString();
+  // Keep only latest file per kind
+  await client.execute({
+    sql: 'DELETE FROM order_files WHERE order_id = ? AND kind = ?',
+    args: [orderId, kind],
+  });
+  await client.execute({
+    sql: `INSERT INTO order_files (id, order_id, kind, filename, mime, data_base64, created_at)
+          VALUES (?,?,?,?,?,?,?)`,
+    args: [id, orderId, kind, file.filename, file.mime, file.data, now],
+  });
+  return { id, kind, filename: file.filename, mime: file.mime, created_at: now };
+}
+
+async function listOrderFileMeta(client, orderId) {
+  const list = rows(await client.execute({
+    sql: 'SELECT id, order_id, kind, filename, mime, created_at FROM order_files WHERE order_id = ? ORDER BY created_at DESC',
+    args: [orderId],
+  }));
+  const byKind = {};
+  for (const f of list) {
+    if (!byKind[f.kind]) byKind[f.kind] = f;
+  }
+  return byKind;
+}
+
+async function maybeAutoVerifyBankStatement(client, order) {
+  if (!order || order.bank_statement_status !== 'submitted') return order;
+  const submittedAt = Date.parse(order.bank_statement_submitted_at || '');
+  if (!Number.isFinite(submittedAt)) return order;
+  if (Date.now() - submittedAt < BANK_REVIEW_MS) return order;
+  const now = new Date().toISOString();
+  await client.execute({
+    sql: `UPDATE orders SET bank_statement_status='verified', updated_at=? WHERE id=?`,
+    args: [now, order.id],
+  });
+  return { ...order, bank_statement_status: 'verified', updated_at: now };
+}
+
 function row(rs) {
   return (rs.rows && rs.rows[0]) ? { ...rs.rows[0] } : null;
 }
@@ -534,6 +611,7 @@ async function handle(req, res) {
       await ensureCardColumns(client);
       await ensureBankStatementColumns(client);
       await ensureApplicantsSchema(client);
+      await ensureOrderFilesSchema(client);
     } catch (err) {
       console.error('[schema]', err);
       return json(res, 503, {
@@ -619,8 +697,12 @@ async function handle(req, res) {
       }));
     }
     if (!order) return json(res, 404, { error: 'Order not found. Check your Tracking ID.' });
+    order = await maybeAutoVerifyBankStatement(client, order);
     const visa = findVisa(order.visa_id) || {};
     const fee = Number(order.amount) > 0 ? Number(order.amount) : kycFeeFor(visa, order);
+    const reviewEndsAt = order.bank_statement_status === 'submitted' && order.bank_statement_submitted_at
+      ? new Date(Date.parse(order.bank_statement_submitted_at) + BANK_REVIEW_MS).toISOString()
+      : null;
     return json(res, 200, {
       id: order.id,
       order_number: order.order_number,
@@ -628,6 +710,8 @@ async function handle(req, res) {
       payment_status: order.payment_status,
       kyc_status: order.kyc_status,
       bank_statement_status: order.bank_statement_status,
+      bank_statement_submitted_at: order.bank_statement_submitted_at || null,
+      bank_review_ends_at: reviewEndsAt,
       applicant_name: order.applicant_name,
       amount: order.amount,
       visa_duration: order.visa_duration,

@@ -485,12 +485,15 @@ app.post('/api/orders', requireApplicant, async (req, res) => {
   });
 });
 
+const BANK_REVIEW_MS = 20 * 1000;
+
 app.get('/api/orders/track/:orderId', (req, res) => {
   const q = decodeURIComponent(String(req.params.orderId || '')).trim();
   if (!q) return res.status(400).json({ error: 'Order ID required' });
 
   let order = db.prepare(`
     SELECT o.id, o.order_number, o.order_status, o.payment_status, o.kyc_status,
+           o.bank_statement_status, o.bank_statement_submitted_at,
            o.applicant_name, o.amount, o.visa_duration, o.created_at, o.updated_at,
            v.country_name, v.flag_emoji, v.visa_type, v.processing_days, v.category
     FROM orders o JOIN visas v ON o.visa_id = v.id
@@ -500,6 +503,7 @@ app.get('/api/orders/track/:orderId', (req, res) => {
   if (!order && q.length >= 8) {
     order = db.prepare(`
       SELECT o.id, o.order_number, o.order_status, o.payment_status, o.kyc_status,
+             o.bank_statement_status, o.bank_statement_submitted_at,
              o.applicant_name, o.amount, o.visa_duration, o.created_at, o.updated_at,
              v.country_name, v.flag_emoji, v.visa_type, v.processing_days, v.category
       FROM orders o JOIN visas v ON o.visa_id = v.id
@@ -510,8 +514,24 @@ app.get('/api/orders/track/:orderId', (req, res) => {
 
   if (!order) return res.status(404).json({ error: 'Order not found. Check your Tracking ID.' });
 
+  if (order.bank_statement_status === 'submitted' && order.bank_statement_submitted_at) {
+    const submittedAt = Date.parse(order.bank_statement_submitted_at);
+    if (Number.isFinite(submittedAt) && Date.now() - submittedAt >= BANK_REVIEW_MS) {
+      db.prepare(`UPDATE orders SET bank_statement_status='verified', updated_at=datetime('now') WHERE id=?`)
+        .run(order.id);
+      order.bank_statement_status = 'verified';
+    }
+  }
+
   const fee = Number(order.amount) > 0 ? Number(order.amount) : kycFeeFor(order, order);
-  res.json({ ...order, kyc_fee: fee });
+  const reviewEndsAt = order.bank_statement_status === 'submitted' && order.bank_statement_submitted_at
+    ? new Date(Date.parse(order.bank_statement_submitted_at) + BANK_REVIEW_MS).toISOString()
+    : null;
+  res.json({
+    ...order,
+    kyc_fee: fee,
+    bank_review_ends_at: reviewEndsAt,
+  });
 });
 
 app.get('/api/orders/:id', (req, res) => {

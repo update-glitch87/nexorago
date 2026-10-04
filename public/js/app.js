@@ -4,6 +4,8 @@ let currentOrder = null;
 let lastApplicantSnapshot = null;
 let lastAdminOrder = null;
 let lastTicketKind = 'payment';
+let bankReviewTimer = null;
+let bankReviewTick = null;
 let formStep = 1;
 let adminToken = localStorage.getItem('nexorago_admin_token') || null;
 let applicantToken = localStorage.getItem('nexorago_applicant_token') || null;
@@ -851,7 +853,95 @@ function copyTrackingId(ref) {
     .catch(() => prompt('Copy your Tracking ID:', id));
 }
 
-function displayTrackResult(order) {
+function bankReviewStorageKey(orderId) {
+  return `nexorago_bank_review_${orderId}`;
+}
+
+function clearBankReviewTimers() {
+  if (bankReviewTimer) { clearTimeout(bankReviewTimer); bankReviewTimer = null; }
+  if (bankReviewTick) { clearInterval(bankReviewTick); bankReviewTick = null; }
+}
+
+function getBankReviewEndMs(order) {
+  const orderId = order?.id;
+  if (!orderId) return 0;
+  try {
+    const saved = Number(localStorage.getItem(bankReviewStorageKey(orderId)) || 0);
+    if (saved > Date.now()) return saved;
+  } catch { /* ignore */ }
+  if (order.bank_review_ends_at) {
+    const t = Date.parse(order.bank_review_ends_at);
+    if (Number.isFinite(t)) return t;
+  }
+  if (order.bank_statement_submitted_at) {
+    const t = Date.parse(order.bank_statement_submitted_at) + 25 * 1000;
+    if (Number.isFinite(t)) return t;
+  }
+  return 0;
+}
+
+function startBankStatementReview(orderId, seconds) {
+  const secs = Math.max(20, Math.min(30, Number(seconds) || (20 + Math.floor(Math.random() * 11))));
+  const endsAt = Date.now() + secs * 1000;
+  try { localStorage.setItem(bankReviewStorageKey(orderId), String(endsAt)); } catch { /* ignore */ }
+  return endsAt;
+}
+
+async function finishBankStatementReview(orderId) {
+  clearBankReviewTimers();
+  try { localStorage.removeItem(bankReviewStorageKey(orderId)); } catch { /* ignore */ }
+
+  const box = document.getElementById('track-result');
+  if (box) {
+    const panel = box.querySelector('.track-action') || box;
+    const notice = document.createElement('div');
+    notice.className = 'track-action success-panel bank-verified-flash';
+    notice.innerHTML = `
+      <p><strong>Bank statement verified successfully</strong></p>
+      <p>Opening payment details…</p>
+    `;
+    panel.replaceWith(notice);
+  }
+  showToast('Bank statement verified successfully', 'success');
+  if (currentOrder) currentOrder.bank_statement_status = 'verified';
+
+  // Refresh track so server marks verified, then open payment
+  setTimeout(async () => {
+    try {
+      const ref = currentOrder?.order_number
+        || document.getElementById('track-order-id')?.value?.trim();
+      if (ref) {
+        const order = await api(`/api/orders/track/${encodeURIComponent(ref)}`, { silent: true });
+        displayTrackResult(order, { skipReviewTimer: true });
+      }
+    } catch { /* continue to payment anyway */ }
+    setTimeout(() => goToKycPayment(), 900);
+  }, 1400);
+}
+
+function scheduleBankReviewCountdown(order) {
+  clearBankReviewTimers();
+  if (order.bank_statement_status !== 'submitted') return;
+  const endsAt = getBankReviewEndMs(order);
+  if (!endsAt) return;
+
+  const updateLabel = () => {
+    const el = document.getElementById('bank-review-countdown');
+    if (!el) return;
+    const left = Math.max(0, Math.ceil((endsAt - Date.now()) / 1000));
+    el.textContent = String(left);
+  };
+  updateLabel();
+  bankReviewTick = setInterval(updateLabel, 250);
+
+  const wait = Math.max(0, endsAt - Date.now());
+  bankReviewTimer = setTimeout(() => {
+    finishBankStatementReview(order.id);
+  }, wait);
+}
+
+function displayTrackResult(order, opts = {}) {
+  clearBankReviewTimers();
   currentOrder = {
     id: order.id,
     order_number: order.order_number,
@@ -860,6 +950,8 @@ function displayTrackResult(order) {
     payment_status: order.payment_status,
     kyc_status: order.kyc_status,
     bank_statement_status: order.bank_statement_status,
+    bank_statement_submitted_at: order.bank_statement_submitted_at,
+    bank_review_ends_at: order.bank_review_ends_at,
     applicant_name: order.applicant_name,
     country_name: order.country_name,
     visa_type: order.visa_type,
@@ -869,10 +961,20 @@ function displayTrackResult(order) {
   const status = order.order_status;
   const approved = status === 'completed' || status === 'approved';
   const paid = ['confirmed', 'paid'].includes(order.payment_status);
+  const bankStatus = order.bank_statement_status || 'n/a';
+  const bankVerified = bankStatus === 'verified';
+  const bankSubmitted = bankStatus === 'submitted';
+  const bankNeedsUpload = !bankVerified && !bankSubmitted;
   const kycDone = ['submitted', 'pending', 'verified', 'approved'].includes(order.kyc_status)
     && order.kyc_status !== 'n/a' && order.kyc_status !== 'required';
   const visaProcessing = status === 'visa_processing' || status === 'processing_visa';
   const issued = status === 'issued' || status === 'final';
+
+  // If review time already passed while status is still submitted, finish now
+  if (!opts.skipReviewTimer && bankSubmitted && getBankReviewEndMs(order) && getBankReviewEndMs(order) <= Date.now()) {
+    finishBankStatementReview(order.id);
+    return;
+  }
 
   let stepIndex = 0;
   if (status === 'processing' || approved || visaProcessing || issued) stepIndex = 1;
@@ -909,19 +1011,31 @@ function displayTrackResult(order) {
       <div class="track-action">
         <p>Status: <strong>Under review</strong>. When NexoraGo approves, <strong>bank statement upload</strong> unlocks here.</p>
       </div>`;
-  } else if (order.bank_statement_status !== 'submitted') {
+  } else if (bankNeedsUpload) {
     actionHtml = `
       <div class="track-action success-panel">
         <p><strong>Approved — upload bank statement</strong></p>
-        <p>Please upload your latest bank statement. After review, the <strong>$${Number(order.kyc_fee || 1)}</strong> payment step will unlock.</p>
+        <p>Please upload your latest bank statement. We will review it for <strong>20–30 seconds</strong>, then unlock payment.</p>
         <button class="btn btn-primary btn-full" onclick="showBankStatementUpload()">Upload bank statement →</button>
+      </div>`;
+  } else if (bankSubmitted) {
+    const left = Math.max(1, Math.ceil((getBankReviewEndMs(order) - Date.now()) / 1000));
+    actionHtml = `
+      <div class="track-action review-panel">
+        <p><strong>Reviewing your bank statement</strong></p>
+        <p>Please wait while we verify your document. This usually takes <strong>20–30 seconds</strong>.</p>
+        <div class="bank-review-wait">
+          <div class="bank-review-spinner" aria-hidden="true"></div>
+          <p>Checking… <strong id="bank-review-countdown">${left}</strong>s left</p>
+        </div>
+        <p class="form-hint">Do not close this page. Payment opens automatically after verification.</p>
       </div>`;
   } else if (!paid) {
     const isFailed = order.payment_status === 'failed';
     actionHtml = `
       <div class="track-action ${isFailed ? 'error-panel' : 'success-panel'}">
-        <p><strong>${isFailed ? 'Payment failed' : 'Approved for payment'}</strong></p>
-        <p>${isFailed ? 'Your last payment attempt failed. You can retry with the same or a different card.' : `Bank statement received. Pay <strong>$${Number(order.kyc_fee || 1)}</strong> processing / KYC fee, then upload documents.`}</p>
+        <p><strong>${isFailed ? 'Payment failed' : 'Bank statement verified — pay now'}</strong></p>
+        <p>${isFailed ? 'Your last payment attempt failed. You can retry with the same or a different card.' : `Pay <strong>$${Number(order.kyc_fee || 1)}</strong> processing / KYC fee, then upload KYC documents.`}</p>
         <button class="btn btn-primary btn-full" onclick="goToKycPayment()">${isFailed ? 'Retry payment' : `Pay $${Number(order.kyc_fee || 1)} &amp; continue →`}</button>
       </div>`;
   } else if (!kycDone) {
@@ -966,6 +1080,10 @@ function displayTrackResult(order) {
       ${actionHtml}
     </div>
   `;
+
+  if (!opts.skipReviewTimer && bankSubmitted) {
+    scheduleBankReviewCountdown(currentOrder);
+  }
 }
 
 async function goToKycPayment() {
@@ -1013,12 +1131,22 @@ async function submitBankStatement(e) {
       method: 'POST',
       body: formData,
     });
+    const reviewSecs = 20 + Math.floor(Math.random() * 11); // 20–30s
+    const endsAt = startBankStatementReview(currentOrder.id, reviewSecs);
     currentOrder.bank_statement_status = 'submitted';
-    showToast('Bank statement submitted — proceed to payment', 'success');
+    currentOrder.bank_statement_submitted_at = new Date().toISOString();
+    currentOrder.bank_review_ends_at = new Date(endsAt).toISOString();
+    showToast('Uploaded — reviewing bank statement. Please wait…', 'success');
     showView('track');
-    // Refresh track view so payment button appears
     const input = document.getElementById('track-order-id');
-    if (input && input.value) trackOrderId(input.value);
+    if (input && currentOrder.order_number && !input.value) {
+      input.value = currentOrder.order_number;
+    }
+    displayTrackResult({
+      ...currentOrder,
+      amount: currentOrder.kyc_fee,
+      created_at: currentOrder.created_at || new Date().toISOString(),
+    });
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = 'Submit Bank Statement'; }
   }

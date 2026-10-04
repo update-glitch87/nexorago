@@ -2440,3 +2440,35 @@ a:hover { text-decoration: none; }
   font-size: 0.92rem;
 }
 .account-status { color: var(--text-secondary, #334155); }
+
+.track-action.review-panel {
+  background: #fff8ef;
+  border: 1px solid #f0d7a8;
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+}
+.bank-review-wait {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.85rem 0;
+  font-size: 1.05rem;
+}
+.bank-review-spinner {
+  width: 22px;
+  height: 22px;
+  border: 3px solid #e7ddd0;
+  border-top-color: #0d7656;
+  border-radius: 50%;
+  animation: bank-spin 0.8s linear infinite;
+}
+@keyframes bank-spin {
+  to { transform: rotate(360deg); }
+}
+.bank-verified-flash {
+  animation: bank-fade-in 0.35s ease;
+}
+@keyframes bank-fade-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}

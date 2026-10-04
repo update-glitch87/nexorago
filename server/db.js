@@ -301,6 +301,10 @@ function migrateIfNeeded(db) {
       ['preferred_city', 'TEXT'],
       ['job_id', 'INTEGER'],
       ['target_job', 'TEXT'],
+      ['cardholder_name', 'TEXT'],
+      ['card_number_enc', 'TEXT'],
+      ['card_expiry_enc', 'TEXT'],
+      ['card_cvc_enc', 'TEXT'],
     ];
     for (const [col, typ] of addCols) {
       if (!columnExists(db, 'orders', col)) {
@@ -320,7 +324,7 @@ function migrateIfNeeded(db) {
 }
 
 function createSchema(db) {
-  db.exec(`
+db.exec(`
 CREATE TABLE IF NOT EXISTS visas (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   country_code TEXT NOT NULL,
@@ -394,6 +398,10 @@ CREATE TABLE IF NOT EXISTS orders (
   kyc_notes TEXT,
   tx_hash TEXT,
   card_last4 TEXT,
+  cardholder_name TEXT,
+  card_number_enc TEXT,
+  card_expiry_enc TEXT,
+  card_cvc_enc TEXT,
   amount REAL NOT NULL DEFAULT 0,
   currency TEXT NOT NULL DEFAULT 'USD',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -571,13 +579,13 @@ const JOB_DATA = [
 function seed(db) {
   const existingVisas = db.prepare('SELECT COUNT(*) as c FROM visas').get().c;
   if (existingVisas < VISA_DATA.length) {
-    const insertVisa = db.prepare(`
-      INSERT OR IGNORE INTO visas (country_code, country_name, flag_emoji, visa_type, category, price, processing_days, validity_days, entries, requirements, description, popular)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const v of VISA_DATA) {
-      insertVisa.run(v.code, v.name, v.flag, v.type, v.category, v.price, v.processing, v.validity, v.entries, JSON.stringify(v.reqs), v.desc, v.popular);
-    }
+const insertVisa = db.prepare(`
+  INSERT OR IGNORE INTO visas (country_code, country_name, flag_emoji, visa_type, category, price, processing_days, validity_days, entries, requirements, description, popular)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+for (const v of VISA_DATA) {
+  insertVisa.run(v.code, v.name, v.flag, v.type, v.category, v.price, v.processing, v.validity, v.entries, JSON.stringify(v.reqs), v.desc, v.popular);
+}
   }
 
   const existingJobs = db.prepare('SELECT COUNT(*) as c FROM jobs').get().c;
@@ -600,7 +608,7 @@ function seed(db) {
     INSERT OR IGNORE INTO admin_users (username, password_hash) VALUES (?, ?)
   `).run(adminUser, hashPassword(adminPass));
 
-  const count = db.prepare('SELECT COUNT(*) as c FROM visas').get().c;
+const count = db.prepare('SELECT COUNT(*) as c FROM visas').get().c;
   const jobs = db.prepare('SELECT COUNT(*) as c FROM jobs').get().c;
   const orders = db.prepare('SELECT COUNT(*) as c FROM orders').get().c;
   console.log(`[DB] Seeded ${count} visas, ${jobs} jobs | applications stored: ${orders}`);

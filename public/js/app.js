@@ -877,12 +877,32 @@ function formatExpiry(input) {
   input.value = value;
 }
 
+function validateExpiry(exp) {
+  if (!/^\d{2}\/\d{2}$/.test(String(exp))) return { ok: false, error: 'Enter expiry as MM/YY' };
+  const [mm, yy] = exp.split('/').map(Number);
+  if (mm < 1 || mm > 12) return { ok: false, error: 'Month must be 01–12' };
+  if (yy <= 27) return { ok: false, error: 'Expiry year must be above 27 (e.g. 28, 29, 30)' };
+  const now = new Date();
+  const currentYear = now.getFullYear() % 100;
+  const currentMonth = now.getMonth() + 1;
+  if (yy < currentYear || (yy === currentYear && mm < currentMonth)) {
+    return { ok: false, error: 'Card has expired' };
+  }
+  return { ok: true };
+}
+
 async function processCardPayment(e) {
   e.preventDefault();
   const form = e.target;
   const data = Object.fromEntries(new FormData(form));
   const btn = form.querySelector('button[type="submit"]');
   const fee = Number(currentOrder.kyc_fee || 1);
+  const expCheck = validateExpiry(data.card_expiry);
+  if (!expCheck.ok) {
+    showToast(expCheck.error, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = `Pay $${fee}`; }
+    return;
+  }
   if (btn) { btn.disabled = true; btn.textContent = 'Processing...'; }
 
   try {

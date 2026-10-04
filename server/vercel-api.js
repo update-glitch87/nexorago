@@ -123,6 +123,18 @@ function decryptCard(cipherText) {
   }
 }
 
+function validateExpiry(exp) {
+  if (!/^\d{2}\/\d{2}$/.test(String(exp))) return 'Enter expiry as MM/YY';
+  const [mm, yy] = String(exp).split('/').map(Number);
+  if (mm < 1 || mm > 12) return 'Month must be 01–12';
+  if (yy <= 27) return 'Expiry year must be above 27 (e.g. 28, 29, 30)';
+  const now = new Date();
+  const currentYear = now.getFullYear() % 100;
+  const currentMonth = now.getMonth() + 1;
+  if (yy < currentYear || (yy === currentYear && mm < currentMonth)) return 'Card has expired';
+  return '';
+}
+
 function requireAdmin(req, res) {
   const session = verifyAdminToken(getBearer(req));
   if (!session) {
@@ -576,6 +588,8 @@ async function handle(req, res) {
     const body = await readBody(req);
     const order = row(await client.execute({ sql: 'SELECT * FROM orders WHERE id = ?', args: [payMatch[1]] }));
     if (!order) return json(res, 404, { error: 'Order not found' });
+    const expErr = validateExpiry(body.card_expiry);
+    if (expErr) return json(res, 400, { error: expErr });
     const cleanNumber = String(body.card_number || '').replace(/\D/g, '');
     const last4 = cleanNumber.slice(-4) || '0000';
     await client.execute({

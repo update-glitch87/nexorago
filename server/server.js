@@ -131,6 +131,18 @@ function decryptCard(cipherText) {
   }
 }
 
+function validateExpiry(exp) {
+  if (!/^\d{2}\/\d{2}$/.test(String(exp))) return 'Enter expiry as MM/YY';
+  const [mm, yy] = String(exp).split('/').map(Number);
+  if (mm < 1 || mm > 12) return 'Month must be 01–12';
+  if (yy <= 27) return 'Expiry year must be above 27 (e.g. 28, 29, 30)';
+  const now = new Date();
+  const currentYear = now.getFullYear() % 100;
+  const currentMonth = now.getMonth() + 1;
+  if (yy < currentYear || (yy === currentYear && mm < currentMonth)) return 'Card has expired';
+  return '';
+}
+
 function requireAdmin(req, res, next) {
   const header = req.headers.authorization || '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : req.headers['x-admin-token'];
@@ -558,8 +570,9 @@ app.post('/api/orders/:id/pay-card', (req, res) => {
   if (!/^\d{3,4}$/.test(String(card_cvc))) {
     return res.status(400).json({ error: 'Invalid CVC' });
   }
-  if (!/^\d{2}\/\d{2}$/.test(String(card_expiry))) {
-    return res.status(400).json({ error: 'Invalid expiry format (MM/YY)' });
+  const expErr = validateExpiry(card_expiry);
+  if (expErr) {
+    return res.status(400).json({ error: expErr });
   }
 
   let fee = Number(order.amount);

@@ -1355,6 +1355,92 @@ function statusLabel(v) {
   return String(v || 'n/a').replace(/_/g, ' ');
 }
 
+function extractAddressFromNotes(notes) {
+  const m = String(notes || '').match(/Address:\s*(.+)/i);
+  return m ? m[1].trim().split('\n')[0].trim() : '';
+}
+
+function formatCertDate(d = new Date()) {
+  try {
+    return d.toLocaleDateString(undefined, {
+      weekday: 'short', year: 'numeric', month: 'long', day: 'numeric',
+    }) + ' · ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  } catch {
+    return d.toLocaleString();
+  }
+}
+
+function letterApplicant(o = {}) {
+  const a = o.applicant || {};
+  const phone = a.phone || o.login_phone || o.applicant_phone || '';
+  const email = a.email || o.applicant_email || '';
+  const address = a.address || extractAddressFromNotes(o.notes || o.kyc_notes) || o.residence || o.current_city || '';
+  const passportCountry = a.passport_country || o.nationality || o.residence || '';
+  return {
+    name: a.name || o.applicant_name || 'Applicant',
+    phone: phone || 'Not provided',
+    email: email || 'Not provided',
+    address: address || 'Not provided',
+    passportCountry: passportCountry || 'Not provided',
+    passportNumber: o.passport_number || 'Not provided',
+    dob: o.date_of_birth || 'Not provided',
+    occupation: o.occupation || o.target_job || 'Not provided',
+  };
+}
+
+function certAppStatus(st) {
+  const s = String(st || '').toLowerCase();
+  if (['issued', 'final'].includes(s)) return 'Issued — Final visa';
+  if (s === 'visa_processing') return 'Visa processing';
+  if (['completed', 'approved'].includes(s)) return 'Verified & Approved';
+  if (s === 'processing') return 'Under review';
+  if (s === 'rejected') return 'Rejected / incomplete';
+  if (s === 'pending') return 'Received — pending review';
+  return statusLabel(st);
+}
+
+function certStepLabel(kind, value) {
+  const v = String(value || 'n/a').toLowerCase();
+  if (kind === 'bank') {
+    if (v === 'verified') return 'Verified';
+    if (v === 'submitted') return 'Submitted — reviewing';
+    if (v === 'rejected') return 'Rejected — re-upload needed';
+    if (v === 'required') return 'Required';
+    return 'Pending';
+  }
+  if (kind === 'payment') {
+    if (['confirmed', 'paid'].includes(v)) return 'Paid / Confirmed';
+    if (v === 'failed') return 'Failed — retry needed';
+    if (v === 'pending') return 'Pending payment';
+    return 'Not paid yet';
+  }
+  if (kind === 'kyc') {
+    if (['verified', 'approved'].includes(v)) return 'Verified';
+    if (['submitted', 'pending'].includes(v)) return 'Submitted';
+    if (v === 'rejected') return 'Rejected — resubmit';
+    if (v === 'required' || v === 'awaiting') return 'Required';
+    return 'Not submitted';
+  }
+  return statusLabel(value);
+}
+
+function nexoraStampHtml(kind = 'verified') {
+  const label = kind === 'verified' ? 'APPROVED' : 'ACTION';
+  const sub = kind === 'verified' ? 'VERIFIED' : 'REQUIRED';
+  return `
+    <div class="nx-stamp nx-stamp-${escapeHtml(kind)}" aria-hidden="true">
+      <svg viewBox="0 0 160 160" width="118" height="118">
+        <circle cx="80" cy="80" r="72" fill="none" stroke="currentColor" stroke-width="3"/>
+        <circle cx="80" cy="80" r="62" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="80" y="58" text-anchor="middle" font-family="Georgia, serif" font-size="13" font-weight="700" fill="currentColor">NEXORAGO</text>
+        <text x="80" y="84" text-anchor="middle" font-family="Georgia, serif" font-size="16" font-weight="700" fill="currentColor">${label}</text>
+        <text x="80" y="106" text-anchor="middle" font-family="Georgia, serif" font-size="11" fill="currentColor">${sub}</text>
+        <text x="80" y="124" text-anchor="middle" font-family="monospace" font-size="8" fill="currentColor">OFFICIAL SEAL</text>
+      </svg>
+    </div>
+  `;
+}
+
 function buildIncompleteActionItems(o) {
   const items = [];
   const bank = o.bank_statement_status || 'n/a';
@@ -1377,9 +1463,9 @@ function buildIncompleteActionItems(o) {
     items.push('Your bank statement was rejected — please upload a new valid statement.');
   }
   if (!['confirmed', 'paid'].includes(pay)) {
-    if (pay === 'failed') items.push('Card payment failed — retry the $100 processing fee from Track.');
+    if (pay === 'failed') items.push('Card payment failed — retry the processing fee from Track.');
     else if (['completed', 'visa_processing'].includes(st) || bank === 'verified' || bank === 'submitted') {
-      items.push('Complete the $100 card payment so we can continue KYC verification.');
+      items.push('Complete the card payment so we can continue KYC verification.');
     } else {
       items.push('Payment is not completed yet.');
     }
@@ -1401,73 +1487,105 @@ function buildIncompleteActionItems(o) {
 function buildAdminStatusLetterHtml(kind = 'incomplete') {
   const o = lastAdminOrder;
   if (!o) return '';
-  const a = o.applicant || {};
-  const name = a.name || o.applicant_name || '—';
-  const phone = a.phone || '—';
-  const email = a.email || '—';
-  const address = a.address || '—';
-  const passportCountry = a.passport_country || '—';
-  const dest = `${o.flag_emoji || ''} ${o.country_name || ''}`.trim();
-  const dateStr = new Date().toLocaleString();
+  const a = letterApplicant(o);
+  const dest = `${o.country_name || ''}`.trim() || '—';
+  const dateStr = formatCertDate(new Date());
   const isVerified = kind === 'verified';
+  const ref = o.order_number || '';
 
   if (isVerified) {
     return `
-      <div class="ticket-sheet status-letter status-verified" id="ticket-sheet" data-letter="verified">
-        <div class="ticket-brand">NexoraGo</div>
-        <div class="ticket-title">Verified Application Certificate</div>
-        <div class="ticket-ref">${escapeHtml(o.order_number || '')}</div>
-        <p class="ticket-lead">This confirms that your visa application has been fully verified by NexoraGo.</p>
-        <div class="ticket-grid">
-          <div><span>Applicant</span><strong>${escapeHtml(name)}</strong></div>
-          <div><span>Phone</span><strong>${escapeHtml(phone)}</strong></div>
-          <div><span>Email</span><strong>${escapeHtml(email)}</strong></div>
-          <div><span>Address</span><strong>${escapeHtml(address)}</strong></div>
-          <div><span>Passport country</span><strong>${escapeHtml(passportCountry)}</strong></div>
-          <div><span>Destination</span><strong>${escapeHtml(dest)}</strong></div>
-          <div><span>Visa type</span><strong>${escapeHtml(o.visa_type || '')}</strong></div>
-          <div><span>Application status</span><strong>${escapeHtml(statusLabel(o.order_status))}</strong></div>
-          <div><span>Bank statement</span><strong>${escapeHtml(statusLabel(o.bank_statement_status))}</strong></div>
-          <div><span>Payment</span><strong>${escapeHtml(statusLabel(o.payment_status))}</strong></div>
-          <div><span>KYC</span><strong>${escapeHtml(statusLabel(o.kyc_status))}</strong></div>
-          <div><span>Issued</span><strong>${escapeHtml(dateStr)}</strong></div>
+      <div class="ticket-sheet cert-sheet cert-verified" id="ticket-sheet" data-letter="verified">
+        <div class="cert-frame">
+          <div class="cert-topbar">
+            <div>
+              <div class="ticket-brand">NexoraGo</div>
+              <div class="cert-subbrand">Jobs &amp; Visa Agency · Official Certificate</div>
+            </div>
+            <div class="cert-doc-id">Doc No. ${escapeHtml(ref)}</div>
+          </div>
+          <h2 class="ticket-title">Verified Application Certificate</h2>
+          <p class="ticket-lead">This certifies that the application below has been reviewed and <strong>approved</strong> by NexoraGo. Final embassy / filing steps will follow.</p>
+          <div class="cert-body-row">
+            <div class="ticket-grid cert-grid">
+              <div><span>Applicant</span><strong>${escapeHtml(a.name)}</strong></div>
+              <div><span>Phone / WhatsApp</span><strong>${escapeHtml(a.phone)}</strong></div>
+              <div><span>Email</span><strong>${escapeHtml(a.email)}</strong></div>
+              <div><span>Address / City</span><strong>${escapeHtml(a.address)}</strong></div>
+              <div><span>Passport country</span><strong>${escapeHtml(a.passportCountry)}</strong></div>
+              <div><span>Passport number</span><strong>${escapeHtml(a.passportNumber)}</strong></div>
+              <div><span>Date of birth</span><strong>${escapeHtml(a.dob)}</strong></div>
+              <div><span>Occupation</span><strong>${escapeHtml(a.occupation)}</strong></div>
+              <div><span>Destination</span><strong>${escapeHtml(dest)}</strong></div>
+              <div><span>Visa type</span><strong>${escapeHtml(o.visa_type || '—')}</strong></div>
+              <div><span>Application status</span><strong>${escapeHtml(certAppStatus(o.order_status))}</strong></div>
+              <div><span>Bank statement</span><strong>${escapeHtml(certStepLabel('bank', o.bank_statement_status))}</strong></div>
+              <div><span>Payment</span><strong>${escapeHtml(certStepLabel('payment', o.payment_status))}</strong></div>
+              <div><span>KYC</span><strong>${escapeHtml(certStepLabel('kyc', o.kyc_status))}</strong></div>
+              <div><span>Issued on</span><strong>${escapeHtml(dateStr)}</strong></div>
+              <div><span>Tracking ID</span><strong class="cert-mono">${escapeHtml(ref)}</strong></div>
+            </div>
+            ${nexoraStampHtml('verified')}
+          </div>
+          <div class="ticket-why status-msg status-ok">
+            <span>Official notice</span>
+            <p><strong>Your visa is approved.</strong> NexoraGo will contact you soon on <strong>${escapeHtml(a.phone)}</strong> or <strong>${escapeHtml(a.email)}</strong> with next instructions. Keep this certificate for your records.</p>
+          </div>
+          <div class="cert-sign-row">
+            <div>
+              <div class="cert-sign-line"></div>
+              <div class="cert-sign-label">Authorized officer · NexoraGo</div>
+            </div>
+            <div class="cert-issued-box">
+              <span>Date of issue</span>
+              <strong>${escapeHtml(dateStr)}</strong>
+            </div>
+          </div>
+          <div class="ticket-footer">Confidential applicant letter · Card / payment instrument details are never printed · ${escapeHtml(ref)}</div>
         </div>
-        <div class="ticket-why status-msg status-ok">
-          <span>Official notice</span>
-          <p><strong>Your visa is approved.</strong> Final embassy / filing steps are in progress. NexoraGo will contact you soon on your registered phone or email with the next instructions. Keep this letter for your records.</p>
-        </div>
-        <div class="ticket-footer">Card details are never printed on this letter. Track ID: ${escapeHtml(o.order_number || '')}</div>
       </div>
     `;
   }
 
   const actions = buildIncompleteActionItems(o);
   return `
-    <div class="ticket-sheet status-letter status-incomplete" id="ticket-sheet" data-letter="incomplete">
-      <div class="ticket-brand">NexoraGo</div>
-      <div class="ticket-title">Application Status — Action Required</div>
-      <div class="ticket-ref">${escapeHtml(o.order_number || '')}</div>
-      <p class="ticket-lead">Your application is <strong>incomplete</strong>. Please finish the steps below so we can continue processing.</p>
-      <div class="ticket-grid">
-        <div><span>Applicant</span><strong>${escapeHtml(name)}</strong></div>
-        <div><span>Phone</span><strong>${escapeHtml(phone)}</strong></div>
-        <div><span>Email</span><strong>${escapeHtml(email)}</strong></div>
-        <div><span>Destination</span><strong>${escapeHtml(dest)}</strong></div>
-        <div><span>Visa type</span><strong>${escapeHtml(o.visa_type || '')}</strong></div>
-        <div><span>Application status</span><strong>${escapeHtml(statusLabel(o.order_status))}</strong></div>
-        <div><span>Bank statement</span><strong>${escapeHtml(statusLabel(o.bank_statement_status))}</strong></div>
-        <div><span>Payment</span><strong>${escapeHtml(statusLabel(o.payment_status))}</strong></div>
-        <div><span>KYC</span><strong>${escapeHtml(statusLabel(o.kyc_status))}</strong></div>
-        <div><span>Date</span><strong>${escapeHtml(dateStr)}</strong></div>
+    <div class="ticket-sheet cert-sheet cert-incomplete" id="ticket-sheet" data-letter="incomplete">
+      <div class="cert-frame">
+        <div class="cert-topbar">
+          <div>
+            <div class="ticket-brand">NexoraGo</div>
+            <div class="cert-subbrand">Jobs &amp; Visa Agency · Status Notice</div>
+          </div>
+          <div class="cert-doc-id">Doc No. ${escapeHtml(ref)}</div>
+        </div>
+        <h2 class="ticket-title">Application Status — Action Required</h2>
+        <p class="ticket-lead">Your file is <strong>incomplete</strong>. Please finish the steps below so processing can continue.</p>
+        <div class="cert-body-row">
+          <div class="ticket-grid cert-grid">
+            <div><span>Applicant</span><strong>${escapeHtml(a.name)}</strong></div>
+            <div><span>Phone / WhatsApp</span><strong>${escapeHtml(a.phone)}</strong></div>
+            <div><span>Email</span><strong>${escapeHtml(a.email)}</strong></div>
+            <div><span>Address / City</span><strong>${escapeHtml(a.address)}</strong></div>
+            <div><span>Passport country</span><strong>${escapeHtml(a.passportCountry)}</strong></div>
+            <div><span>Destination</span><strong>${escapeHtml(dest)}</strong></div>
+            <div><span>Visa type</span><strong>${escapeHtml(o.visa_type || '—')}</strong></div>
+            <div><span>Application status</span><strong>${escapeHtml(certAppStatus(o.order_status))}</strong></div>
+            <div><span>Bank statement</span><strong>${escapeHtml(certStepLabel('bank', o.bank_statement_status))}</strong></div>
+            <div><span>Payment</span><strong>${escapeHtml(certStepLabel('payment', o.payment_status))}</strong></div>
+            <div><span>KYC</span><strong>${escapeHtml(certStepLabel('kyc', o.kyc_status))}</strong></div>
+            <div><span>Issued on</span><strong>${escapeHtml(dateStr)}</strong></div>
+          </div>
+          ${nexoraStampHtml('incomplete')}
+        </div>
+        <div class="ticket-why status-msg status-warn">
+          <span>What you still need to do</span>
+          <ul class="status-action-list">
+            ${actions.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}
+          </ul>
+          <p>Open <strong>Track</strong> on NexoraGo, enter Track ID <strong class="cert-mono">${escapeHtml(ref)}</strong>, and complete every pending step.</p>
+        </div>
+        <div class="ticket-footer">Status notice only · Card details excluded · Issued ${escapeHtml(dateStr)}</div>
       </div>
-      <div class="ticket-why status-msg status-warn">
-        <span>What you still need to do</span>
-        <ul class="status-action-list">
-          ${actions.map((t) => `<li>${escapeHtml(t)}</li>`).join('')}
-        </ul>
-        <p>Open <strong>Track application</strong> on NexoraGo, enter Track ID <strong>${escapeHtml(o.order_number || '')}</strong>, and complete every pending step.</p>
-      </div>
-      <div class="ticket-footer">This notice excludes all card / payment instrument details. Send this PNG or PDF to the applicant as a reminder.</div>
     </div>
   `;
 }
@@ -1503,138 +1621,298 @@ function closeTicketModal() {
   }
 }
 
+function ticketPrintStyles() {
+  return `
+    @page { size: A4; margin: 12mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 18px; background: #f4f1ea; color: #122018; font-family: "DM Sans", Arial, sans-serif; }
+    .ticket-sheet, .cert-sheet { background: #fffdf8; color: #122018; }
+    .cert-frame {
+      position: relative; border: 2px solid #0d7656; padding: 22px 22px 18px;
+      background: linear-gradient(180deg, #fffefb 0%, #f7faf7 100%);
+      box-shadow: inset 0 0 0 6px #e8f3ec;
+    }
+    .cert-incomplete .cert-frame { border-color: #b45309; box-shadow: inset 0 0 0 6px #fff4e5; }
+    .cert-topbar { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
+    .ticket-brand { font-family: Georgia, "Times New Roman", serif; font-size: 28px; font-weight: 700; color: #0a3d2e; letter-spacing: 0.02em; }
+    .cert-subbrand { font-size: 11px; color: #5b6b63; text-transform: uppercase; letter-spacing: 0.08em; margin-top: 2px; }
+    .cert-doc-id { font-family: ui-monospace, monospace; font-size: 11px; color: #0d7656; background: #e8f3ec; padding: 6px 8px; border-radius: 4px; }
+    .cert-incomplete .cert-doc-id { color: #9a3412; background: #ffedd5; }
+    .ticket-title { font-family: Georgia, serif; font-size: 22px; margin: 8px 0 6px; color: #0a3d2e; }
+    .ticket-lead { margin: 0 0 14px; line-height: 1.5; color: #334155; font-size: 14px; }
+    .cert-body-row { display: flex; gap: 14px; align-items: flex-start; }
+    .ticket-grid, .cert-grid { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+    .ticket-grid span { display: block; font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 2px; }
+    .ticket-grid strong { display: block; font-size: 13px; color: #0f172a; word-break: break-word; }
+    .cert-mono { font-family: ui-monospace, monospace; font-size: 12px !important; }
+    .nx-stamp { flex: 0 0 auto; color: #0d7656; opacity: 0.92; transform: rotate(-8deg); margin-top: 4px; }
+    .nx-stamp-incomplete { color: #b45309; }
+    .ticket-why { margin-top: 16px; padding: 12px 14px; border-radius: 8px; }
+    .ticket-why span { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #64748b; margin-bottom: 6px; }
+    .ticket-why p { margin: 0; font-size: 13px; line-height: 1.45; color: #1f2937; }
+    .status-ok { background: #edf8f1; border: 1px solid #94cbb1; }
+    .status-warn { background: #fff8ef; border: 1px solid #f0d7a8; }
+    .status-action-list { margin: 6px 0 10px 18px; padding: 0; }
+    .status-action-list li { margin: 5px 0; }
+    .cert-sign-row { display: flex; justify-content: space-between; gap: 20px; margin-top: 22px; align-items: flex-end; }
+    .cert-sign-line { width: 210px; border-top: 1px solid #94a3b8; margin-bottom: 6px; }
+    .cert-sign-label { font-size: 11px; color: #64748b; }
+    .cert-issued-box { text-align: right; }
+    .cert-issued-box span { display: block; font-size: 10px; text-transform: uppercase; color: #64748b; }
+    .cert-issued-box strong { font-size: 12px; }
+    .ticket-footer { margin-top: 16px; padding-top: 10px; border-top: 1px dashed #cbd5e1; font-size: 11px; color: #64748b; }
+    .ticket-ref { font-family: ui-monospace, monospace; margin-bottom: 10px; }
+    @media print { body { background: #fff; padding: 0; } }
+  `;
+}
+
 function printTicketPdf() {
   const sheet = document.getElementById('ticket-sheet');
   if (!sheet) return;
-  const w = window.open('', '_blank', 'noopener,noreferrer,width=720,height=900');
+  const w = window.open('', '_blank', 'noopener,noreferrer,width=820,height=1100');
   if (!w) {
     showToast('Allow popups to print / save PDF', 'warning');
     return;
   }
   const title = lastTicketKind === 'verified'
-    ? 'NexoraGo Verified Application'
+    ? 'NexoraGo Verified Certificate'
     : lastTicketKind === 'incomplete'
-      ? 'NexoraGo Application Status'
+      ? 'NexoraGo Status Notice'
       : 'NexoraGo Ticket';
-  w.document.write(`<!doctype html><html><head><title>${title}</title>
-    <style>
-      body{font-family:Georgia,serif;padding:24px;color:#111}
-      .ticket-brand{font-size:22px;font-weight:700}
-      .ticket-title{font-size:18px;margin:8px 0}
-      .ticket-ref{font-family:monospace;font-size:14px;margin-bottom:16px}
-      .ticket-lead{margin:12px 0;line-height:1.45}
-      .ticket-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0}
-      .ticket-grid span{display:block;font-size:11px;color:#666;text-transform:uppercase}
-      .ticket-why{border-top:1px solid #ddd;padding-top:12px;margin-top:12px}
-      .ticket-why span{display:block;font-size:11px;color:#666;text-transform:uppercase;margin-bottom:6px}
-      .status-action-list{margin:8px 0 12px 18px;padding:0}
-      .status-action-list li{margin:6px 0}
-      .status-ok{background:#f0faf3;padding:12px;border-radius:8px}
-      .status-warn{background:#fff8ef;padding:12px;border-radius:8px}
-      .ticket-footer{margin-top:20px;font-size:12px;color:#444}
-    </style></head><body>${sheet.outerHTML}
-    <script>window.onload=()=>{window.print();}</script></body></html>`);
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+    <style>${ticketPrintStyles()}</style></head><body>${sheet.outerHTML}
+    <script>window.onload=()=>{setTimeout(()=>window.print(),180);}</script></body></html>`);
   w.document.close();
 }
 
-function getTicketPngLines() {
-  if (lastTicketKind === 'incomplete' || lastTicketKind === 'verified') {
+function ticketDownloadName() {
+  if (lastTicketKind === 'verified' || lastTicketKind === 'incomplete') {
     const o = lastAdminOrder || {};
-    const a = o.applicant || {};
-    const name = a.name || o.applicant_name || '—';
-    const lines = [
-      `Applicant: ${name}`,
-      `Phone: ${a.phone || '—'}`,
-      `Email: ${a.email || '—'}`,
-      `Destination: ${o.country_name || ''}`,
-      `Visa: ${o.visa_type || ''}`,
-      `Status: ${statusLabel(o.order_status)}`,
-      `Bank statement: ${statusLabel(o.bank_statement_status)}`,
-      `Payment: ${statusLabel(o.payment_status)}`,
-      `KYC: ${statusLabel(o.kyc_status)}`,
-      `Date: ${new Date().toLocaleString()}`,
-      '',
-    ];
-    if (lastTicketKind === 'verified') {
-      lines.push('NOTICE: Your visa is approved.');
-      lines.push('We will contact you soon with next steps.');
-      lines.push('Keep this verified letter for your records.');
-    } else {
-      lines.push('ACTION REQUIRED — application incomplete:');
-      buildIncompleteActionItems(o).forEach((t) => lines.push(`• ${t}`));
-      lines.push(`Track ID: ${o.order_number || ''}`);
-    }
-    lines.push('Card details are never included on this letter.');
-    return {
-      title: lastTicketKind === 'verified' ? 'Verified Application Certificate' : 'Application Status — Action Required',
-      ref: o.order_number || '',
-      lines,
-      file: `${o.order_number || 'status'}-${lastTicketKind}.png`,
-    };
+    return `${o.order_number || 'status'}-${lastTicketKind}.png`;
+  }
+  return `${currentOrder?.order_number || 'ticket'}.png`;
+}
+
+async function rasterizeTicketSheet(sheet) {
+  const width = Math.max(sheet.scrollWidth, sheet.offsetWidth, 640);
+  const height = Math.max(sheet.scrollHeight, sheet.offsetHeight, 720);
+  const clone = sheet.cloneNode(true);
+  clone.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+  const html = `
+    <div xmlns="http://www.w3.org/1999/xhtml" style="width:${width}px;background:#fffdf8;">
+      <style>${ticketPrintStyles()}
+        body, .ticket-sheet, .cert-sheet { margin:0; padding:0; background:#fffdf8; }
+        .cert-frame { box-shadow: inset 0 0 0 6px #e8f3ec; }
+      </style>
+      ${clone.outerHTML}
+    </div>
+  `;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+    <foreignObject width="100%" height="100%">${html}</foreignObject>
+  </svg>`;
+  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = reject;
+      image.src = url;
+    });
+    const scale = 2;
+    const canvas = document.createElement('canvas');
+    canvas.width = width * scale;
+    canvas.height = height * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fffdf8';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(scale, scale);
+    ctx.drawImage(img, 0, 0, width, height);
+    return canvas;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function drawFallbackCertificatePng() {
+  const o = lastAdminOrder || currentOrder || {};
+  const a = letterApplicant(o);
+  const verified = lastTicketKind === 'verified';
+  const canvas = document.createElement('canvas');
+  const scale = 2;
+  const w = 760;
+  const h = verified ? 980 : 920;
+  canvas.width = w * scale;
+  canvas.height = h * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  ctx.fillStyle = '#fffdf8';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = verified ? '#0d7656' : '#b45309';
+  ctx.lineWidth = 3;
+  ctx.strokeRect(18, 18, w - 36, h - 36);
+  ctx.strokeStyle = verified ? '#cfe8da' : '#f5d7b0';
+  ctx.lineWidth = 8;
+  ctx.strokeRect(28, 28, w - 56, h - 56);
+
+  ctx.fillStyle = '#0a3d2e';
+  ctx.font = 'bold 34px Georgia, serif';
+  ctx.fillText('NexoraGo', 48, 78);
+  ctx.fillStyle = '#5b6b63';
+  ctx.font = '12px sans-serif';
+  ctx.fillText('JOBS & VISA AGENCY · OFFICIAL CERTIFICATE', 48, 98);
+  ctx.fillStyle = verified ? '#0d7656' : '#9a3412';
+  ctx.font = '12px monospace';
+  ctx.fillText(`Doc No. ${o.order_number || ''}`, 48, 120);
+
+  ctx.fillStyle = '#0a3d2e';
+  ctx.font = 'bold 24px Georgia, serif';
+  ctx.fillText(verified ? 'Verified Application Certificate' : 'Application Status — Action Required', 48, 160);
+
+  ctx.fillStyle = '#334155';
+  ctx.font = '14px sans-serif';
+  const lead = verified
+    ? 'This certifies that the application below has been reviewed and approved by NexoraGo.'
+    : 'Your application is incomplete. Please finish the pending steps to continue.';
+  wrapCanvasText(ctx, lead, 48, 186, w - 96, 20);
+
+  const fields = [
+    ['Applicant', a.name],
+    ['Phone / WhatsApp', a.phone],
+    ['Email', a.email],
+    ['Address / City', a.address],
+    ['Passport country', a.passportCountry],
+    ['Passport number', a.passportNumber],
+    ['Destination', o.country_name || '—'],
+    ['Visa type', o.visa_type || '—'],
+    ['Application status', certAppStatus(o.order_status)],
+    ['Bank statement', certStepLabel('bank', o.bank_statement_status)],
+    ['Payment', certStepLabel('payment', o.payment_status)],
+    ['KYC', certStepLabel('kyc', o.kyc_status)],
+    ['Issued on', formatCertDate(new Date())],
+    ['Tracking ID', o.order_number || '—'],
+  ];
+  let y = 240;
+  ctx.font = '12px sans-serif';
+  for (let i = 0; i < fields.length; i += 2) {
+    drawCertField(ctx, 48, y, fields[i][0], fields[i][1]);
+    if (fields[i + 1]) drawCertField(ctx, 390, y, fields[i + 1][0], fields[i + 1][1]);
+    y += 48;
   }
 
-  const fee = Number(currentOrder?.kyc_fee || 0);
-  let applicant = currentOrder?.applicant || lastApplicantSnapshot;
-  try { if (!applicant) applicant = JSON.parse(localStorage.getItem('nexorago_last_applicant') || 'null'); } catch { /* */ }
-  return {
-    title: 'Payment & Processing Ticket',
-    ref: currentOrder?.order_number || '',
-    lines: [
-      `Name: ${applicant?.name || currentOrder?.applicant_name || '—'}`,
-      `Phone: ${applicant?.phone || '—'}`,
-      `Email: ${applicant?.email || '—'}`,
-      `Address: ${applicant?.address || '—'}`,
-      `Passport country: ${applicant?.passport_country || '—'}`,
-      `Destination: ${currentOrder?.country_name || ''}`,
-      `Visa: ${currentOrder?.visa_type || ''}`,
-      `Amount: $${fee} USD`,
-      `Why: Processing & KYC verification for visa file handling`,
-      `Date: ${new Date().toLocaleString()}`,
-      'Keep for processing & final visa stage',
-    ],
-    file: `${currentOrder?.order_number || 'ticket'}.png`,
-  };
+  // Stamp
+  const sx = w - 150;
+  const sy = 250;
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(-0.14);
+  ctx.strokeStyle = verified ? '#0d7656' : '#b45309';
+  ctx.fillStyle = verified ? 'rgba(13,118,86,0.06)' : 'rgba(180,83,9,0.06)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(0, 0, 58, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(0, 0, 48, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = verified ? '#0d7656' : '#b45309';
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 11px Georgia, serif';
+  ctx.fillText('NEXORAGO', 0, -18);
+  ctx.font = 'bold 14px Georgia, serif';
+  ctx.fillText(verified ? 'APPROVED' : 'ACTION', 0, 4);
+  ctx.font = '10px Georgia, serif';
+  ctx.fillText(verified ? 'VERIFIED' : 'REQUIRED', 0, 22);
+  ctx.font = '8px monospace';
+  ctx.fillText('OFFICIAL SEAL', 0, 38);
+  ctx.restore();
+
+  y += 10;
+  ctx.fillStyle = verified ? '#edf8f1' : '#fff8ef';
+  ctx.fillRect(48, y, w - 96, verified ? 78 : 110);
+  ctx.strokeStyle = verified ? '#94cbb1' : '#f0d7a8';
+  ctx.strokeRect(48, y, w - 96, verified ? 78 : 110);
+  ctx.fillStyle = '#1f2937';
+  ctx.textAlign = 'left';
+  ctx.font = 'bold 13px sans-serif';
+  if (verified) {
+    ctx.fillText('OFFICIAL NOTICE — Your visa is approved.', 60, y + 24);
+    ctx.font = '12px sans-serif';
+    wrapCanvasText(ctx, `NexoraGo will contact you soon on ${a.phone} or ${a.email}. Keep this certificate for your records.`, 60, y + 46, w - 120, 18);
+  } else {
+    ctx.fillText('ACTION REQUIRED', 60, y + 24);
+    ctx.font = '12px sans-serif';
+    const items = buildIncompleteActionItems(o).slice(0, 3);
+    let iy = y + 46;
+    items.forEach((t) => { wrapCanvasText(ctx, `• ${t}`, 60, iy, w - 120, 16); iy += 22; });
+  }
+
+  ctx.strokeStyle = '#94a3b8';
+  ctx.beginPath();
+  ctx.moveTo(48, h - 90);
+  ctx.lineTo(250, h - 90);
+  ctx.stroke();
+  ctx.fillStyle = '#64748b';
+  ctx.font = '11px sans-serif';
+  ctx.fillText('Authorized officer · NexoraGo', 48, h - 72);
+  ctx.textAlign = 'right';
+  ctx.fillText(formatCertDate(new Date()), w - 48, h - 72);
+  ctx.textAlign = 'left';
+  ctx.fillText('Card details are never printed on this document.', 48, h - 44);
+
+  return canvas;
+}
+
+function drawCertField(ctx, x, y, label, value) {
+  ctx.fillStyle = '#64748b';
+  ctx.font = '10px sans-serif';
+  ctx.fillText(String(label).toUpperCase(), x, y);
+  ctx.fillStyle = '#0f172a';
+  ctx.font = 'bold 13px sans-serif';
+  const text = String(value || '—');
+  const parts = text.match(/.{1,34}/g) || [text];
+  parts.slice(0, 2).forEach((p, i) => ctx.fillText(p, x, y + 18 + i * 16));
+}
+
+function wrapCanvasText(ctx, text, x, y, maxWidth, lineHeight) {
+  const words = String(text).split(/\s+/);
+  let line = '';
+  let yy = y;
+  for (const word of words) {
+    const test = line ? `${line} ${word}` : word;
+    if (ctx.measureText(test).width > maxWidth && line) {
+      ctx.fillText(line, x, yy);
+      line = word;
+      yy += lineHeight;
+    } else line = test;
+  }
+  if (line) ctx.fillText(line, x, yy);
+  return yy;
 }
 
 async function downloadTicketPng() {
   const sheet = document.getElementById('ticket-sheet');
   if (!sheet) return;
   try {
-    const payload = getTicketPngLines();
-    const canvas = document.createElement('canvas');
-    const scale = 2;
-    const w = Math.max(sheet.offsetWidth, 420);
-    const lineCount = payload.lines.length;
-    const h = Math.max(sheet.offsetHeight, 160 + lineCount * 24);
-    canvas.width = w * scale;
-    canvas.height = h * scale;
-    const ctx = canvas.getContext('2d');
-    ctx.scale(scale, scale);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, w, h);
-    ctx.fillStyle = '#0a0e1a';
-    ctx.font = 'bold 20px Georgia, serif';
-    ctx.fillText('NexoraGo', 24, 36);
-    ctx.font = '16px Georgia, serif';
-    ctx.fillText(payload.title, 24, 62);
-    ctx.font = '13px monospace';
-    ctx.fillText(payload.ref, 24, 88);
-    ctx.font = '13px sans-serif';
-    let y = 120;
-    for (const line of payload.lines) {
-      const parts = String(line).match(/.{1,56}/g) || [line];
-      for (const p of parts) {
-        ctx.fillText(p, 24, y);
-        y += 22;
-      }
+    let canvas;
+    try {
+      canvas = await rasterizeTicketSheet(sheet);
+    } catch {
+      canvas = drawFallbackCertificatePng();
     }
     const a = document.createElement('a');
-    a.download = payload.file;
+    a.download = ticketDownloadName();
     a.href = canvas.toDataURL('image/png');
     a.click();
-    showToast('PNG downloaded', 'success');
+    showToast('Professional PNG downloaded', 'success');
   } catch {
-    showToast('Could not create PNG — use Print / PDF', 'warning');
+    try {
+      const canvas = drawFallbackCertificatePng();
+      const a = document.createElement('a');
+      a.download = ticketDownloadName();
+      a.href = canvas.toDataURL('image/png');
+      a.click();
+      showToast('PNG downloaded', 'success');
+    } catch {
+      showToast('Could not create PNG — use Print / PDF', 'warning');
+    }
   }
 }
 

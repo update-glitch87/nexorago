@@ -76,6 +76,10 @@ const JOB_TITLES = [
   'Warehouse / Logistics', 'Chef / Hospitality', 'Teacher / Trainer', 'Sales Executive',
   'Cook', 'Driver', 'Heavy Machinery Driver', 'Receptionist', 'General Labour',
   'Female Nurse', 'Female Child Care Taker',
+  'Factory Packing Worker', 'Warehouse Packer', 'Food Packer', 'Cleaner',
+  'Hotel Housekeeping', 'Waiter / Waitress', 'Kitchen Helper', 'Supermarket Helper',
+  'Loading Helper', 'Security Guard', 'Farm Worker', 'Production Line Worker',
+  'Car Wash Worker', 'Kitchen Porter',
 ];
 
 module.exports = {
